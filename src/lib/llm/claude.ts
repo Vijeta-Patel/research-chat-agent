@@ -126,6 +126,28 @@ export const claudeProvider: Provider = {
     return { text: text.replace(/^\s+/, ""), blocked, model };
   },
 
+  async complete(system: string, prompt: string): Promise<string> {
+    let text = "";
+    for await (const m of query({
+      prompt,
+      options: {
+        model: config.claudeMemoryModel,
+        effort: "low",
+        systemPrompt: system,
+        tools: [],
+        allowedTools: [],
+        maxTurns: 1,
+        settingSources: [],
+        persistSession: false,
+        cwd: tmpdir(),
+      },
+    })) {
+      if (m.type === "assistant") for (const b of m.message.content) if (b.type === "text") text += b.text;
+      if (m.type === "result" && m.subtype !== "success" && !text) throw new Error((m.errors ?? []).join("; ") || m.subtype);
+    }
+    return text;
+  },
+
   describeError(err: unknown): string {
     const msg = err instanceof Error ? err.message : String(err);
     if (/auth|api key|login|401|403/i.test(msg))

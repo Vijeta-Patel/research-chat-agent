@@ -6,7 +6,7 @@ export async function GET(_req: Request, ctx: { params: Promise<{ id: string }> 
   await connection();
   const { id } = await ctx.params;
   if (!conversationExists(id)) return Response.json({ error: "not found" }, { status: 404 });
-  return Response.json({ messages: getMessages(id) });
+  return Response.json({ messages: getMessages(id, true) });
 }
 
 // "Forget this conversation": removes the turns and their index entries.

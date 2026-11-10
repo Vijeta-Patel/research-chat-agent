@@ -12,14 +12,16 @@ export interface Source {
   retrievedAt: string; // ISO timestamp we fetched it
   excerpt: string; // text the model actually saw (used for the number check)
   query: string; // search that surfaced it
+  read?: "full" | "rendered" | "snippet"; // how we got the text: our reader, rendered page, or provider snippet
 }
 
 export interface MemoryRecord {
   id: string; // "M3" — cited inline as [M3]
-  conversationId: string;
+  kind: "message" | "summary" | "claims" | "profile";
+  conversationId: string; // "" for the profile
   conversationTitle: string;
   createdAt: string; // ISO
-  role: "user" | "assistant";
+  role?: "user" | "assistant"; // for kind "message"
   text: string;
 }
 
@@ -29,6 +31,7 @@ export interface MemoryReport {
   records: MemoryRecord[];
   totalConversations: number;
   note: string; // human-readable summary shown in the UI ("memory used")
+  retrievers?: { dates: number; keywords: number; topics: number; vectors: string };
 }
 
 export interface CheckResult {
@@ -38,7 +41,7 @@ export interface CheckResult {
 }
 
 export interface TraceStep {
-  step: "model" | "search" | "repair" | "guard";
+  step: "model" | "search" | "repair" | "guard" | "memory";
   detail: string;
   ms: number;
   firstMs?: number; // time to first streamed chunk (model calls)
@@ -54,7 +57,7 @@ export type AgentEvent =
   | { type: "notice"; message: string }
   | { type: "checks"; result: CheckResult }
   | { type: "revision"; text: string; result: CheckResult; note: string }
-  | { type: "done"; messageId: string; ms: number; trace: TraceStep[] }
+  | { type: "done"; messageId: string; ms: number; trace: TraceStep[]; turn: TurnMeta }
   | { type: "error"; message: string };
 
 export interface StoredMessage {
@@ -66,4 +69,16 @@ export interface StoredMessage {
   sources: Source[];
   memory: MemoryRecord[];
   checks: CheckResult | null;
+  turn?: TurnMeta; // how this answer was produced (assistant messages)
+}
+
+export interface TurnMeta {
+  provider: string;
+  model: string;
+  totalMs: number;
+  firstTokenMs: number | null;
+  searches: number;
+  revised: boolean;
+  notices: string[];
+  trace: TraceStep[];
 }

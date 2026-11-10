@@ -1,6 +1,9 @@
 # research chat
 
-A chat agent with one tool, web search, that also remembers your past conversations and cites every claim.
+A chat agent with one tool, web search, that remembers your past conversations and cites every claim.
+- **Search** is our own pipeline: an API only supplies the URLs; we fetch, read and rank the pages ourselves.
+- **Memory** has four layers: transcripts, conversation summaries, a versioned facts ledger and a user profile, recalled by hybrid retrieval.
+- **"How I got this"** under every answer shows the model, timings, searches and checks for that turn.
 
 Ask it things like:
 - *"Compare HubSpot, Pipedrive and Salesforce pricing for a 20-person sales team"*
@@ -22,12 +25,18 @@ npm run dev                  # http://localhost:3000
 | Variable | Required | What for |
 |---|---|---|
 | `ANTHROPIC_API_KEY` | yes* | The model (Claude Sonnet 5.5 via the Claude Agent SDK). *For local development the SDK can also use an existing Claude Code login on the machine. |
-| `TAVILY_API_KEY` | yes | Web search. The free plan is 1,000 credits/month. |
+| `TAVILY_API_KEY` | one of these two | Search discovery provider #1 (free 1,000 credits/month) |
+| `FIRECRAWL_API_KEY` | one of these two (both recommended) | Discovery provider #2, used automatically if Tavily fails, and the renderer for pages that need JavaScript (free 1,000 credits/month) |
 | `LLM_PROVIDER` | no | `claude` (default) or `gemini` |
 | `GEMINI_API_KEY` | only if `LLM_PROVIDER=gemini` | Google Gemini |
-| `CLAUDE_MODEL`, `CLAUDE_EFFORT`, `GEMINI_MODEL`, `SEARCH_DEPTH`, `DB_PATH` | no | Tuning. Defaults are in `.env.example`. |
+| `CLAUDE_MODEL`, `CLAUDE_EFFORT`, `GEMINI_MODEL`, `DB_PATH` | no | Tuning. Defaults are in `.env.example`. |
 
-Memory is stored in `data/agent.db` (SQLite, gitignored). Delete that file to start fresh, or remove a single conversation with the × in the sidebar.
+Everything is stored in `data/agent.db` (SQLite, gitignored):
+- **Tables:** transcripts, conversation summaries, facts ledger, profile and the turn ledger.
+- **Starting fresh:** delete the file.
+- **Forgetting one conversation:** use the × in the past-chats drawer. It also removes the summaries, facts and profile entries derived from that conversation.
+
+Optional: with `GEMINI_API_KEY` set, conversation summaries are also embedded, and vector similarity becomes a fourth recall signal.
 
 ## Test it
 
@@ -45,8 +54,8 @@ src/lib/agent/run.ts         one user turn, end to end (the agent)
 src/lib/agent/guardrails.ts  privacy, injection, secrets, URL, rate-limit guards
 src/lib/agent/citations.ts   deterministic citation/number checks
 src/lib/agent/prompt.ts      system prompt (static, cacheable)
-src/lib/memory/              SQLite store + date-aware retrieval
-src/lib/search/              Tavily client + source reliability tiers
+src/lib/memory/              db.ts (schema) · retrieve.ts (hybrid recall) · distill.ts (memory write path) · embed.ts (optional vectors)
+src/lib/search/              our web search pipeline: discover (provider chain) → read → rank, + source tiers
 src/lib/llm/                 model providers: claude.ts (Agent SDK), gemini.ts
 src/app/api/chat/route.ts    streaming endpoint (server-sent events)
 src/components/              chat UI

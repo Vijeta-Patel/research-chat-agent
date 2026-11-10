@@ -1,5 +1,8 @@
 import * as chrono from "chrono-node";
+import { cosine, embed, embeddingsEnabled } from "@/lib/memory/embed";
 import {
+  allConversationMemories, claimKey, claimsForConversations, getConversationMemory, getProfile,
+  searchClaimHistory, searchConversationMemory, type Claim,
   historyStats, listConversations, messagesBetween, now, recentConversationMessages, searchMessages, type MessageHit,
 } from "@/lib/memory/db";
 import type { MemoryRecord, MemoryReport } from "@/lib/types";
@@ -19,9 +22,11 @@ export interface UserClock {
 // ship in the last month" → a search filter, not a memory lookup.
 const PAST_REF = new RegExp(
   [
-    String.raw`\b(i|we)\s+(?:had\s+)?(ask|asked|say|said|tell|told|discuss|discussed|talk|talked|mention|mentioned|shortlist|shortlisted|compare|compared|look|looked|decide|decided|choose|chose|pick|picked|share|shared|research|researched)\b`,
-    String.raw`\byou\s+(?:had\s+)?(say|said|tell|told|recommend|recommended|suggest|suggested|answer|answered|mention|mentioned|find|found|give|gave|show|showed)\b`,
-    String.raw`\b(last time|previously|our (chat|conversation|discussion|last chat)|we spoke|you remember|remember when|do you remember)\b`,
+    // Base forms only for speech verbs ("what did I ask"); for decision verbs require the
+    // past tense, so "which CRM should we pick?" is NOT a question about our past.
+    String.raw`\b(i|we)\s+(?:had\s+)?(ask|asked|say|said|tell|told|discuss|discussed|talk|talked|mention|mentioned|shortlisted|compared|looked|decided|chose|picked|shared|researched)\b`,
+    String.raw`\byou\s+(?:had\s+)?(say|said|tell|told|recommend|recommended|suggest|suggested|answer|answered|mention|mentioned|found|gave|showed)\b`,
+    String.raw`\b(last time|previously|our (chat|conversation|discussion|last chat)|we spoke|you remember|remember when|do you remember|talked about|we covered)\b`,
     String.raw`\b(your|the) (answer|recommendation|advice|reply|shortlist|list) (from|on|last)\b`,
   ].join("|"),
   "i",
@@ -116,101 +121,203 @@ const clip = (s: string, n: number) => {
   return t.length > n ? t.slice(0, n) + " …[truncated]" : t;
 };
 
-export function retrieveMemory(
+export interface RetrieveOptions {
+  currentConversationId?: string;
+  currentMessageCount: number; // messages already in this conversation (for the long-chat summary)
+  historyWindow: number; // how many of them are replayed verbatim
+}
+
+const RRF_K = 60;
+
+/**
+ * Memory READ path — hybrid recall over four retrievers, fused by rank:
+ *   1. dates      exact SQL range over messages (only when the message is about our past)
+ *   2. keywords   FTS5/BM25 over raw transcripts
+ *   3. topics     FTS5/BM25 over DISTILLED summaries/topics/entities (catches vague
+ *                 wording: "that database thing" → topic "managed databases")
+ *   4. vectors    optional hosted embeddings over summaries (only with GEMINI_API_KEY)
+ * Then fills a fixed budget, most reliable first: profile → long-chat summary →
+ * exact date hits → claims (with history) → conversation summaries → raw excerpts.
+ */
+export async function retrieveMemory(
   message: string,
   clock: UserClock,
-  currentConversationId?: string,
-): { report: MemoryReport; promptBlock: string } {
+  opts: RetrieveOptions,
+): Promise<{ report: MemoryReport; promptBlock: string }> {
   const tz = safeTimeZone(clock.timeZone);
+  const current = opts.currentConversationId;
   const allDates = resolveDates(message, clock);
   const terms = keywordTerms(message, allDates);
   const pastRef = PAST_REF.test(message);
   // Dates select memory only when the message is about our past conversations.
   const dateRefs = pastRef ? allDates : [];
-  const stats = historyStats(currentConversationId);
-
-  type Tagged = MessageHit & { why: string };
-  const picked: Tagged[] = [];
-  const seen = new Set<string>();
-  const take = (hits: MessageHit[], why: string) => {
-    for (const h of hits) if (!seen.has(h.id)) { seen.add(h.id); picked.push({ ...h, why }); }
-  };
-
-  const perDate: { label: string; hits: MessageHit[] }[] = [];
-  for (const d of dateRefs) {
-    const hits = messagesBetween(d.from, d.to, currentConversationId);
-    perDate.push({ label: d.label, hits });
-    take(hits, `on ${d.label}`);
-  }
+  const stats = historyStats(current);
   const fts = terms.map((w) => `"${w.replace(/"/g, "")}"`).join(" OR ");
-  const kwHits = searchMessages(fts, currentConversationId, pastRef ? 12 : 4);
-  // For questions that aren't about the past, only the user's earlier messages
-  // are useful context (their team size, needs). Old answers are stale facts and
-  // would tempt the model to repeat them as current.
-  take(pastRef ? kwHits : kwHits.filter((h) => h.role === "user"), "keyword match");
-  if (pastRef && !dateRefs.length && picked.length === 0) {
-    take(recentConversationMessages(3, currentConversationId), "most recent conversations");
+
+  // ── Retrievers ──────────────────────────────────────────────────────────
+  const perDate: { label: string; hits: MessageHit[] }[] = dateRefs.map((d) => ({
+    label: d.label,
+    hits: messagesBetween(d.from, d.to, current),
+  }));
+  const dateHits = perDate.flatMap((d) => d.hits);
+  const kwHits = searchMessages(fts, current, pastRef ? 12 : 4);
+  const topicConvs = pastRef ? searchConversationMemory(fts, current, 8) : [];
+  let vectorConvs: string[] = [];
+  let vectorState = "off";
+  if (pastRef && embeddingsEnabled()) {
+    const mems = allConversationMemories(current).filter((m) => m.embedding?.length);
+    const q = mems.length ? (await embed([message], "query"))?.[0] : null;
+    if (q) {
+      // Measured: hosted embeddings rank correctly but with small margins, so only
+      // near-top hits count, and vectors get half weight in fusion (a tie-breaker).
+      const scored = mems.map((m) => ({ id: m.conversationId, s: cosine(q, m.embedding!) })).sort((a, b) => b.s - a.s);
+      const best = scored[0]?.s ?? 0;
+      vectorConvs = scored.filter((x) => x.s >= Math.max(0.6, best - 0.03)).slice(0, 2).map((x) => x.id);
+      vectorState = `${vectorConvs.length} match(es)`;
+    } else vectorState = mems.length ? "unavailable" : "no summaries yet";
   }
 
-  // Fill the fixed budget in priority order (date matches first, then keywords).
+  // ── Reciprocal rank fusion over conversations ───────────────────────────
+  const uniq = (xs: string[]) => [...new Set(xs)];
+  const lists: { ids: string[]; weight: number }[] = [
+    { ids: uniq(dateHits.map((h) => h.conversationId)), weight: 3 }, // exact → strongest
+    { ids: uniq(kwHits.map((h) => h.conversationId)), weight: 1 },
+    { ids: topicConvs, weight: 1 },
+    { ids: vectorConvs, weight: 0.5 },
+  ];
+  const fused = new Map<string, number>();
+  for (const l of lists) l.ids.forEach((id, rank) => fused.set(id, (fused.get(id) ?? 0) + l.weight / (RRF_K + rank + 1)));
+  const selected = pastRef ? [...fused.entries()].sort((a, b) => b[1] - a[1]).slice(0, 3).map(([id]) => id) : [];
+
+  // ── Assemble records into a fixed budget ────────────────────────────────
   const records: MemoryRecord[] = [];
   let used = 0;
-  for (const h of picked) {
-    const text = clip(h.text, h.role === "user" ? 500 : 900);
-    if (used + text.length > MAX_CHARS) break;
+  const push = (r: Omit<MemoryRecord, "id">, max: number) => {
+    const text = clip(r.text, max);
+    if (used + text.length > MAX_CHARS) return false;
     used += text.length;
-    records.push({
-      id: `M${records.length + 1}`,
-      conversationId: h.conversationId,
-      conversationTitle: h.conversationTitle,
-      createdAt: h.createdAt,
-      role: h.role,
-      text,
-    });
+    records.push({ ...r, id: `M${records.length + 1}`, text });
+    return true;
+  };
+
+  // 1. Profile: always — cross-session context that doesn't depend on keywords.
+  const profile = getProfile();
+  if (profile.length) {
+    push({ kind: "profile", conversationId: "", conversationTitle: "profile", createdAt: profile[0].updatedAt,
+      text: profile.map((p) => `${p.key}: ${p.value}`).join("; ") }, 800);
+  }
+  // 2. Long chat: what scrolled out of the verbatim window of THIS conversation.
+  if (current && opts.currentMessageCount > opts.historyWindow) {
+    const cm = getConversationMemory(current);
+    if (cm) push({ kind: "summary", conversationId: current, conversationTitle: `${cm.title} (earlier in this conversation)`,
+      createdAt: cm.updatedAt, text: cm.summary }, 900);
+  }
+  // 3. Exact date hits: raw wording, the ground truth for "what did I ask on…".
+  const seenMsg = new Set<string>();
+  for (const h of dateHits) {
+    if (seenMsg.has(h.id)) continue;
+    seenMsg.add(h.id);
+    push({ kind: "message", conversationId: h.conversationId, conversationTitle: h.conversationTitle, createdAt: h.createdAt, role: h.role, text: h.text },
+      h.role === "user" ? 500 : 900);
+  }
+  if (pastRef) {
+    // 4. Claims (versioned) from selected conversations + any whose entity is named now.
+    const claimMap = new Map<string, Claim>();
+    // Claims from the top 2 conversations, plus the full history of any fact whose
+    // entity/attribute/value is named in the question.
+    for (const c of [...claimsForConversations(selected.slice(0, 2)), ...searchClaimHistory(fts)]) claimMap.set(c.id, c);
+    const groups = new Map<string, Claim[]>();
+    for (const c of claimMap.values()) {
+      const k = `${claimKey(c.entity)}|${claimKey(c.attribute)}`;
+      groups.set(k, [...(groups.get(k) ?? []), c]);
+    }
+    if (groups.size) {
+      const lines = [...groups.values()].slice(0, 20).map((vs) => {
+        vs.sort((a, b) => a.observedAt.localeCompare(b.observedAt));
+        const hist = vs.map((v) => `${v.value} (observed ${fmtDay(new Date(v.observedAt), tz)}${v.sourceTitle ? `, source: ${v.sourceTitle}` : ""})`);
+        return `- ${vs[0].entity} · ${vs[0].attribute}: ${hist.join(" → ")}`;
+      });
+      push({ kind: "claims", conversationId: [...claimMap.values()][0].conversationId, conversationTitle: "recorded facts",
+        createdAt: [...claimMap.values()][0].observedAt, text: lines.join("\n") }, 2500);
+    }
+    // 5. Summaries of the fused top conversations.
+    for (const id of selected) {
+      const cm = getConversationMemory(id);
+      if (cm) push({ kind: "summary", conversationId: id, conversationTitle: cm.title, createdAt: cm.createdAt,
+        text: `${cm.summary}\nTopics: ${cm.topics.join(", ")}` }, 900);
+    }
+  }
+  // 6. Raw keyword excerpts. Not about the past → only the user's own earlier
+  //    messages (their needs), never old answers that could be repeated as current facts.
+  for (const h of pastRef ? kwHits : kwHits.filter((x) => x.role === "user")) {
+    if (seenMsg.has(h.id)) continue;
+    seenMsg.add(h.id);
+    if (!push({ kind: "message", conversationId: h.conversationId, conversationTitle: h.conversationTitle, createdAt: h.createdAt, role: h.role, text: h.text },
+      h.role === "user" ? 500 : 900)) break;
+  }
+  // 7. About the past but nothing matched at all → most recent conversations.
+  const substantive = records.filter((r) => r.kind !== "profile").length;
+  if (pastRef && !dateRefs.length && !substantive) {
+    for (const h of recentConversationMessages(3, current)) {
+      if (!push({ kind: "message", conversationId: h.conversationId, conversationTitle: h.conversationTitle, createdAt: h.createdAt, role: h.role, text: h.text },
+        h.role === "user" ? 500 : 900)) break;
+    }
   }
 
-  // Always tell the model what was searched and what exists — including "nothing".
+  // ── Header: always say what was searched and what exists ────────────────
   const lines: string[] = [];
   lines.push(`Stored history: ${stats.count} earlier conversation(s)` +
     (stats.first ? `, from ${fmtDay(new Date(stats.first), tz)} to ${fmtDay(new Date(stats.last!), tz)}.` : "."));
   for (const d of perDate) {
     if (!d.hits.length) lines.push(`Searched ${d.label}: NO conversation records on that date.`);
-    else {
-      const titles = [...new Set(d.hits.map((h) => `"${h.conversationTitle}"`))].join(", ");
-      lines.push(`Searched ${d.label}: ${d.hits.length} message(s) in conversation(s) ${titles}.`);
-    }
+    else lines.push(`Searched ${d.label}: ${d.hits.length} message(s) in ${[...new Set(d.hits.map((h) => `"${h.conversationTitle}"`))].join(", ")}.`);
   }
-  if (terms.length) lines.push(`Keyword search for [${terms.join(", ")}]: ${kwHits.length} matching message(s).`);
-  // When a lookup about the past comes up empty (or a date has no records),
-  // list the conversations that DO exist, nearest to the asked-about date, so
-  // the agent can offer "did you mean the one on 3 Nov about X?" instead of a dead end.
+  if (terms.length) {
+    lines.push(`Keyword search for [${terms.join(", ")}]: ${kwHits.length} message(s)` +
+      (pastRef ? `; topic search over conversation summaries: ${topicConvs.length} conversation(s); semantic search: ${vectorState}.` : "."));
+  }
   const missedDate = perDate.some((d) => !d.hits.length);
-  if (pastRef && (missedDate || !records.length) && stats.count > 0) {
+  if (pastRef && (missedDate || !substantive) && stats.count > 0) {
+    // A compact index (with topics) so the model can do the final semantic match itself.
     const anchor = dateRefs.length ? new Date(dateRefs[0].from).getTime() : now().getTime();
+    const topics = new Map(allConversationMemories(current).map((m) => [m.conversationId, m.topics]));
     const index = listConversations()
-      .filter((c) => c.id !== currentConversationId)
+      .filter((c) => c.id !== current)
       .sort((a, b) => Math.abs(new Date(a.createdAt).getTime() - anchor) - Math.abs(new Date(b.createdAt).getTime() - anchor))
-      .slice(0, 8)
-      .map((c) => `"${c.title}" (started ${fmtDay(new Date(c.createdAt), tz)})`);
+      .slice(0, 12)
+      .map((c) => `"${c.title}" (started ${fmtDay(new Date(c.createdAt), tz)}${topics.get(c.id)?.length ? `; topics: ${topics.get(c.id)!.join(", ")}` : ""})`);
     lines.push(`Conversations that do exist, nearest first: ${index.join("; ")}.`);
   }
-  if (!records.length) lines.push("No relevant records found. Do NOT invent or guess what was said in past conversations.");
+  if (!substantive) lines.push("No relevant records found. Do NOT invent or guess what was said in past conversations.");
   else if (!pastRef) lines.push("These are only possibly-related earlier messages; mention them only if genuinely useful.");
 
-  const recordText = records
-    .map((r) => `[${r.id}] ${fmtDateTime(r.createdAt, tz)} · conversation "${r.conversationTitle}" · ${r.role.toUpperCase()}:\n${r.text}`)
-    .join("\n\n");
-
+  const label = (r: MemoryRecord) => {
+    switch (r.kind) {
+      case "profile": return `[${r.id}] What the user has told me about themselves (from earlier chats):`;
+      case "claims": return `[${r.id}] Facts recorded in earlier answers (value history with the date each was observed — compare with current sources):`;
+      case "summary": return `[${r.id}] Summary of conversation "${r.conversationTitle}" (started ${fmtDay(new Date(r.createdAt), tz)}):`;
+      default: return `[${r.id}] ${fmtDateTime(r.createdAt, tz)} · conversation "${r.conversationTitle}" · ${(r.role ?? "user").toUpperCase()}:`;
+    }
+  };
+  const recordText = records.map((r) => `${label(r)}\n${r.text}`).join("\n\n");
   const promptBlock = `<memory>\n${lines.join("\n")}\n${recordText ? "\n" + recordText + "\n" : ""}</memory>`;
 
-  const note = records.length
-    ? `${records.length} past message(s) used` + (dateRefs.length ? ` · ${dateRefs.map((d) => d.label).join(", ")}` : "")
-    : dateRefs.length
-      ? `No records for ${dateRefs.map((d) => d.label).join(", ")}`
-      : pastRef ? "No matching past conversations" : "";
+  const kinds = (k: MemoryRecord["kind"]) => records.filter((r) => r.kind === k).length;
+  const parts = [
+    kinds("message") && `${kinds("message")} message(s)`,
+    kinds("summary") && `${kinds("summary")} summar${kinds("summary") === 1 ? "y" : "ies"}`,
+    kinds("claims") && "recorded facts",
+    kinds("profile") && "your profile",
+  ].filter(Boolean);
+  const note = substantive || kinds("profile")
+    ? `used ${parts.join(", ")}` + (dateRefs.length ? ` · ${dateRefs.map((d) => d.label).join(", ")}` : "")
+    : dateRefs.length ? `No records for ${dateRefs.map((d) => d.label).join(", ")}` : pastRef ? "No matching past conversations" : "";
 
   return {
-    report: { dateRefs, searchedTerms: terms, records, totalConversations: stats.count, note },
+    report: {
+      dateRefs, searchedTerms: terms, records, totalConversations: stats.count, note,
+      retrievers: { dates: dateHits.length, keywords: kwHits.length, topics: topicConvs.length, vectors: vectorState },
+    },
     promptBlock,
   };
 }

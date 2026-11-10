@@ -54,7 +54,7 @@ export function Answer(props: {
                       {id.slice(1)}
                     </a>
                     <span className="pointer-events-none absolute bottom-full left-1/2 z-20 mb-1.5 hidden w-80 -translate-x-1/2 rounded-xl bg-night p-3 text-xs font-light leading-snug text-night-ink shadow-[0_8px_30px_rgba(0,0,0,0.25)] group-hover:block">
-                      <span className="mb-1 flex items-center gap-2"><TierBadge tier={s.tier} /><span className="truncate font-mono text-[10px] text-night-muted">{s.domain} · {fmtDate(s.publishedDate)}</span></span>
+                      <span className="mb-1 flex items-center gap-2"><TierBadge tier={s.tier} /><span className="truncate font-mono text-[10px] text-night-muted">{s.domain} · {fmtDate(s.publishedDate)}{s.read ? ` · ${s.read === "snippet" ? "snippet only" : s.read === "rendered" ? "full page (rendered)" : "full page"}` : ""}</span></span>
                       <span className="block font-medium">{s.title}</span>
                       <span className="mt-1 line-clamp-4 block text-night-muted">{s.excerpt.slice(0, 280)}</span>
                     </span>
@@ -63,10 +63,10 @@ export function Answer(props: {
               }
               if (m) {
                 return (
-                  <button type="button" onClick={() => props.onOpenConversation(m.conversationId)}
-                    title={`From our conversation "${m.conversationTitle}" on ${fmtDate(m.createdAt)}`}
+                  <button type="button" onClick={() => m.conversationId && props.onOpenConversation(m.conversationId)}
+                    title={m.kind === "profile" ? "Something you told me in an earlier chat" : m.kind === "claims" ? "Facts recorded in earlier answers" : `From our conversation "${m.conversationTitle}" on ${fmtDate(m.createdAt)}`}
                     className="mx-0.5 align-super font-mono text-[10px] text-muted underline decoration-dotted underline-offset-2 hover:text-ink">
-                    memory {fmtDate(m.createdAt)}
+                    {m.kind === "profile" ? "you told me" : m.kind === "claims" ? "recorded facts" : `memory ${fmtDate(m.createdAt)}`}
                   </button>
                 );
               }

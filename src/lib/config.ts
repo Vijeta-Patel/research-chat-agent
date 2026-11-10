@@ -13,9 +13,14 @@ export const config = {
   // Sonnet 5.5 defaults to "high"; "medium" is the recommended starting point
   // for multi-step tool use and keeps chat latency down.
   claudeEffort: (process.env.CLAUDE_EFFORT || "medium") as Effort,
+  // Small, fast model for background memory distillation (summaries, claims, profile).
+  claudeMemoryModel: process.env.CLAUDE_MEMORY_MODEL || "claude-haiku-5-5",
 
   geminiApiKey: process.env.GEMINI_API_KEY ?? "",
   geminiModel: process.env.GEMINI_MODEL || process.env.MAIN_MODEL || "gemini-3.6-flash",
+  geminiMemoryModel: process.env.GEMINI_MEMORY_MODEL || "gemini-3.5-flash-lite",
+  // Optional 4th recall retriever: hosted embeddings (only used when GEMINI_API_KEY is set).
+  embeddingModel: process.env.EMBEDDING_MODEL || "gemini-embedding-001",
   // Tried in order when the main Gemini model is overloaded (503) or out of quota (429).
   geminiFallbackModels: (process.env.GEMINI_FALLBACK_MODELS || process.env.FALLBACK_MODELS || "gemini-3.5-flash-lite,gemini-3.8-flash")
     .split(",").map((m) => m.trim()).filter(Boolean),
@@ -23,9 +28,14 @@ export const config = {
   // model is available, abandon it (overloaded models took ~11s just to 503).
   connectDeadlineMs: 15_000,
 
+  // Web search: discovery providers (tried in order, at least one key needed).
   tavilyApiKey: process.env.TAVILY_API_KEY ?? "",
-  // Tavily: "basic" = 1 credit, "advanced" = 2 credits per search.
-  searchDepth: (process.env.SEARCH_DEPTH || "basic") as "basic" | "advanced",
+  firecrawlApiKey: process.env.FIRECRAWL_API_KEY ?? "",
+  // Our reader: how many result pages we fetch and read per search, how long we
+  // wait for each, and how many may be rendered (JS pages, via Firecrawl).
+  pagesReadPerSearch: 5,
+  pageFetchTimeoutMs: 4_500,
+  rendersPerSearch: 2,
   dbPath: process.env.DB_PATH || "data/agent.db",
 
   // Guardrail budgets per user turn.
@@ -41,6 +51,6 @@ export const config = {
 export function missingKeys(): string[] {
   const missing: string[] = [];
   if (config.llmProvider === "gemini" && !config.geminiApiKey) missing.push("GEMINI_API_KEY");
-  if (!config.tavilyApiKey) missing.push("TAVILY_API_KEY");
+  if (!config.tavilyApiKey && !config.firecrawlApiKey) missing.push("TAVILY_API_KEY or FIRECRAWL_API_KEY");
   return missing;
 }

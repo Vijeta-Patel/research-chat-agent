@@ -2,14 +2,16 @@ import { config } from "@/lib/config";
 import { buildTurnPreamble } from "@/lib/agent/prompt";
 import { checkAnswer } from "@/lib/agent/citations";
 import { maskSecrets, neutralizeInjection, sanitizeQuery, stripUnknownUrls } from "@/lib/agent/guardrails";
-import { addMessage, conversationExists, createConversation, getMessages, now } from "@/lib/memory/db";
+import { addMessage, conversationExists, createConversation, getMessages, now, saveTurn } from "@/lib/memory/db";
+import { distillTurn, track } from "@/lib/memory/distill";
 import { retrieveMemory, safeTimeZone, type UserClock } from "@/lib/memory/retrieve";
-import { tavilySearch, type WebSearchArgs } from "@/lib/search/tavily";
+import { webSearch } from "@/lib/search/pipeline";
+import type { WebSearchArgs } from "@/lib/search/discover";
 import { TIER_LABEL, classifySource, domainOf } from "@/lib/search/sources";
 import { claudeProvider } from "@/lib/llm/claude";
 import { geminiProvider } from "@/lib/llm/gemini";
 import type { GenerateHooks, GenerateInput, Provider } from "@/lib/llm/types";
-import type { AgentEvent, CheckResult, Source, StoredMessage, TraceStep } from "@/lib/types";
+import type { AgentEvent, CheckResult, Source, StoredMessage, TraceStep, TurnMeta } from "@/lib/types";
 
 // One user turn, end to end. This file is the agent; the model provider only
 // runs the model ⇄ web_search loop (src/lib/llm/*).
@@ -84,7 +86,18 @@ export async function runTurn({ conversationId, message: rawMessage, clock, emit
   addMessage({ conversationId: convId, role: "user", text: message });
 
   // 2. Memory (deterministic, before the model runs).
-  const { report, promptBlock } = retrieveMemory(message, clock, convId);
+  const tm = Date.now();
+  const { report, promptBlock } = await retrieveMemory(message, clock, {
+    currentConversationId: convId,
+    currentMessageCount: prior.length,
+    historyWindow: config.historyWindow,
+  });
+  const rv = report.retrievers;
+  trace.push({
+    step: "memory",
+    detail: `recall: ${report.records.length} record(s)${rv ? ` [dates ${rv.dates} · keywords ${rv.keywords} · topics ${rv.topics} · vectors ${rv.vectors}]` : ""}`,
+    ms: Date.now() - tm,
+  });
   emit({ type: "memory", report });
 
   // 3. Sources are numbered per conversation, so [S3] means the same page in every turn.
@@ -122,13 +135,19 @@ export async function runTurn({ conversationId, message: rawMessage, clock, emit
     emit({ type: "search_start", query, options });
     const ts = Date.now();
     try {
-      const results = await tavilySearch(args, signal);
-      trace.push({ step: "search", detail: query, ms: Date.now() - ts });
+      // Our pipeline: discover (provider chain) → fetch → read → rank.
+      const { results, stats } = await webSearch(args, signal);
+      trace.push({
+        step: "search",
+        detail: `${query} [${stats.provider}${stats.failures.length ? ` after ${stats.failures.length} failover` : ""}; read ${stats.full} full, ${stats.rendered} rendered, ${stats.snippet} snippet; discover ${stats.discoveryMs}ms, read ${stats.readMs}ms]`,
+        ms: Date.now() - ts,
+      });
+      if (stats.failures.length) trace.push({ step: "guard", detail: `search failover: ${stats.failures.join(" | ")}`, ms: 0 });
       let injectionHits = 0;
       const found: Source[] = results.map((r) => {
         const existing = urlToId.get(r.url);
         const id = existing ?? `S${nextId++}`;
-        const clean = neutralizeInjection((r.content || "").slice(0, 2000));
+        const clean = neutralizeInjection(r.text);
         injectionHits += clean.hits;
         const src: Source = {
           id,
@@ -136,14 +155,15 @@ export async function runTurn({ conversationId, message: rawMessage, clock, emit
           title: neutralizeInjection(r.title || domainOf(r.url)).text,
           domain: domainOf(r.url),
           tier: classifySource({ url: r.url, title: r.title, query, includeDomains: args.include_domains }),
-          publishedDate: r.published_date && !Number.isNaN(Date.parse(r.published_date)) ? new Date(r.published_date).toISOString() : null,
+          publishedDate: r.publishedDate && !Number.isNaN(Date.parse(r.publishedDate)) ? new Date(r.publishedDate).toISOString() : null,
           retrievedAt: now().toISOString(),
           excerpt: clean.text,
           query,
+          read: r.mode,
         };
         if (existing) {
           const prev = sources.get(existing);
-          if (prev && !prev.excerpt.includes(src.excerpt.slice(0, 80))) src.excerpt = `${prev.excerpt}\n${src.excerpt}`.slice(0, 4000);
+          if (prev && !prev.excerpt.includes(src.excerpt.slice(0, 80))) src.excerpt = `${prev.excerpt}\n${src.excerpt}`.slice(0, 5000);
         }
         urlToId.set(r.url, id);
         sources.set(id, src);
@@ -165,6 +185,7 @@ export async function runTurn({ conversationId, message: rawMessage, clock, emit
           id: s.id, title: s.title, domain: s.domain, url: s.url,
           reliability: TIER_LABEL[s.tier],
           published: s.publishedDate ? s.publishedDate.slice(0, 10) : "unknown",
+          text_basis: s.read === "snippet" ? "search-engine snippet only (page could not be read)" : "most relevant passages from the full page",
           untrusted_page_text: s.excerpt,
         })),
         note: notes.length ? notes.join(" ") : undefined,
@@ -176,11 +197,18 @@ export async function runTurn({ conversationId, message: rawMessage, clock, emit
     }
   }
 
+  let firstTokenMs: number | null = null;
+  let modelUsed = "";
+  const notices: string[] = [];
   const hooks = (silent: boolean): GenerateHooks => ({
-    onText: (delta) => { if (!silent) emit({ type: "text", delta }); },
+    onText: (delta) => {
+      if (silent) return;
+      if (firstTokenMs === null) firstTokenMs = Date.now() - started;
+      emit({ type: "text", delta });
+    },
     search: guardedSearch,
     trace: (step) => trace.push(step),
-    notice: (m) => emit({ type: "notice", message: m }),
+    notice: (m) => { notices.push(m); emit({ type: "notice", message: m }); },
     signal,
   });
   const base: Omit<GenerateInput, "silent" | "allowTools"> = {
@@ -195,6 +223,7 @@ export async function runTurn({ conversationId, message: rawMessage, clock, emit
   try {
     const r = await llm.generate({ ...base, allowTools: true, silent: false }, hooks(false));
     finalText = streamedText = r.text;
+    modelUsed = r.model;
     // Guardrail #3: the provider's safety system blocked or cut off the answer.
     if (r.blocked) {
       trace.push({ step: "guard", detail: "provider blocked the response", ms: 0 });
@@ -308,7 +337,43 @@ export async function runTurn({ conversationId, message: rawMessage, clock, emit
     conversationId: convId, role: "assistant", text: finalText.trim(),
     sources: turnSources, memory: report.records, checks,
   });
+
+  // 7. Turn ledger: how this answer was produced (provider, model, timings, trace).
   const totalMs = Date.now() - started;
+  const turn: TurnMeta = {
+    provider: llm.name,
+    model: modelUsed || (llm.name === "claude" ? config.claudeModel : config.geminiModel),
+    totalMs,
+    firstTokenMs,
+    searches: searchesUsed,
+    revised: finalText !== streamedText,
+    notices: [...notices, ...revisionNotes],
+    trace,
+  };
+  const ledger = { messageId, conversationId: convId, timeZone: tz, ...turn };
+  saveTurn(ledger);
   console.log(`[trace] ${llm.name} ${totalMs}ms total | ` + trace.map((t) => `${t.step}:${t.detail} ${t.ms}ms${t.firstMs !== undefined ? ` (first ${t.firstMs}ms)` : ""}`).join(" | "));
-  emit({ type: "done", messageId, ms: totalMs, trace });
+  emit({ type: "done", messageId, ms: totalMs, trace, turn });
+
+  // 8. Memory WRITE path, in the background (never delays the answer):
+  //    distil summary + topics + claims + profile; record the outcome in the ledger.
+  const cited = new Set(finalText.match(/S\d+/g) ?? []);
+  track(
+    distillTurn(llm, {
+      conversationId: convId,
+      messageId,
+      at: now(),
+      userText: message,
+      answerText: finalText,
+      citedSources: [...sources.values()].filter((s) => cited.has(s.id)),
+    })
+      .then((d) => {
+        trace.push({ step: "memory", detail: `distilled: summary ${d.summary ? "updated" : "unchanged"} · ${d.claims} new claim(s) · ${d.profile} profile fact(s)${d.embedded ? " · embedded" : ""}`, ms: d.ms });
+        saveTurn(ledger);
+      })
+      .catch((err) => {
+        trace.push({ step: "memory", detail: `distillation failed: ${err instanceof Error ? err.message.slice(0, 100) : String(err)}`, ms: 0 });
+        saveTurn(ledger);
+      }),
+  );
 }

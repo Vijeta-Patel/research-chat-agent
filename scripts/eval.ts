@@ -24,7 +24,7 @@ interface TurnResult {
   text: string;
   events: Ev[];
   searches: string[];
-  sources: { id: string; tier: string; domain: string }[];
+  sources: { id: string; tier: string; domain: string; read?: string }[];
   checks: { uncitedSentences: string[]; unknownCitations: string[]; unsupportedNumbers: unknown[] } | null;
   notices: string[];
   ms: number;
@@ -37,6 +37,7 @@ interface Case {
   category: string;
   prompt: string | ((d: Dates) => string);
   followUp?: string;
+  followUpNewChat?: boolean;
   expect: (r: TurnResult) => (string | null)[]; // null = pass, string = failure reason
 }
 interface Dates { seeded: Date; empty: Date }
@@ -70,6 +71,25 @@ const CASES: Case[] = [
       r.searches.length ? null : "should search for current pricing",
       has(/unchanged|changed|same|no change|still/i, r.text, "should state per-item whether it changed"),
       r.sources.some((s) => s.tier === "official") ? null : "should use at least one official vendor source",
+    ],
+  },
+  {
+    id: "vague-recall",
+    category: "Memory",
+    prompt: "That database thing we talked about a while ago — what did you recommend?",
+    expect: (r) => [
+      has(/postgres|neon|supabase/i, r.text, "should recall the Postgres hosting chat from vague wording (no date, no product name)"),
+      cites(r.text, "M") ? null : "should cite memory [M#]",
+    ],
+  },
+  {
+    id: "profile-cross-session",
+    category: "Memory",
+    prompt: "Quick context for later: we're a 20-person sales team based in India. No need to look anything up — just acknowledge.",
+    followUp: "For a CRM billed per seat, how many seats would we need?",
+    followUpNewChat: true,
+    expect: (r) => [
+      has(/\b20\b/, r.text, "a NEW chat should know the team size from the profile"),
     ],
   },
   {
@@ -140,6 +160,16 @@ const CASES: Case[] = [
     ],
   },
   {
+    id: "js-pricing-page",
+    category: "Search pipeline",
+    prompt: "What are Pipedrive's current pricing plans per seat?",
+    expect: (r) => [
+      r.sources.some((s) => /pipedrive\.com/.test(s.domain) && (s.read === "full" || s.read === "rendered")) ? null : "should read Pipedrive's own pages in full (not just snippets)",
+      cites(r.text, "S") ? null : "should cite sources",
+      (r.checks?.unsupportedNumbers.length ?? 0) === 0 ? null : "every price should appear in the cited page text",
+    ],
+  },
+  {
     id: "secret-masking",
     category: "Guardrails",
     prompt: `My OpenAI key is ${FAKE_KEY} — is it safe to share keys in chat?`,
@@ -169,6 +199,20 @@ async function main() {
   const conv = createConversation("Managed Postgres hosting options", seeded);
   addMessage({ conversationId: conv, role: "user", at: seeded, text: "What are good managed Postgres hosting options for a small startup, and what do they cost?" });
   addMessage({ conversationId: conv, role: "assistant", at: new Date(seeded.getTime() + 40_000), text: "Good options: Neon (Launch plan ~$19/month), Supabase (Pro $25/month), and AWS RDS (pay-as-you-go). For a small startup I'd start with Neon or Supabase." });
+
+  // Distil the seeded conversation like a real turn would (summary, topics, claims).
+  const { distillTurn, waitForDistillation } = await import("@/lib/memory/distill");
+  const { claudeProvider } = await import("@/lib/llm/claude");
+  const { geminiProvider } = await import("@/lib/llm/gemini");
+  const seedMsgs = getMessages(conv);
+  await distillTurn(config.llmProvider === "gemini" ? geminiProvider : claudeProvider, {
+    conversationId: conv, messageId: seedMsgs[1].id, at: seeded,
+    userText: seedMsgs[0].text, answerText: seedMsgs[1].text + " [S1][S2]",
+    citedSources: [
+      { id: "S1", url: "https://neon.com/pricing", title: "Neon pricing", domain: "neon.com", tier: "official", publishedDate: null, retrievedAt: "", excerpt: "", query: "" },
+      { id: "S2", url: "https://supabase.com/pricing", title: "Supabase pricing", domain: "supabase.com", tier: "official", publishedDate: null, retrievedAt: "", excerpt: "", query: "" },
+    ],
+  }).catch((err) => console.warn(`seed distillation failed (memory cases may be affected): ${err instanceof Error ? err.message.slice(0, 120) : err}`));
 
   const clock = { tzOffsetMinutes: 0, timeZone: "UTC" };
   async function turn(message: string, conversationId?: string): Promise<TurnResult> {
@@ -200,14 +244,35 @@ async function main() {
     };
   }
 
+  // Failover: break the primary search provider; the chain must move on.
+  CASES.push({
+    id: "search-failover",
+    category: "Robustness",
+    prompt: "What's the latest stable version of Node.js?",
+    expect: (r) => [
+      r.searches.length ? null : "should search",
+      cites(r.text, "S") ? null : "should still answer with cited sources",
+    ],
+  });
   const only = process.argv.slice(2);
   const rows: { c: Case; r: TurnResult; failures: string[] }[] = [];
   for (const c of CASES.filter((x) => !only.length || only.includes(x.id))) {
     const prompt = typeof c.prompt === "function" ? c.prompt({ seeded, empty }) : c.prompt;
     process.stdout.write(`▶ ${c.id} … `);
+    const realTavily = config.tavilyApiKey;
+    if (c.id === "search-failover") {
+      if (!config.firecrawlApiKey) { console.log("SKIP (needs FIRECRAWL_API_KEY)"); continue; }
+      config.tavilyApiKey = "tvly-deliberately-invalid";
+    }
     let r = await turn(prompt);
-    if (c.followUp) r = await turn(c.followUp, r.conversationId);
+    if (c.followUp) {
+      await waitForDistillation();
+      // followUpNewChat: ask the follow-up in a NEW conversation (cross-session memory).
+      r = await turn(c.followUp, c.followUpNewChat ? undefined : r.conversationId);
+    }
+    await waitForDistillation(); // memory written before the next case runs
     const failures = r.error ? [`error: ${r.error}`] : (c.expect(r).filter(Boolean) as string[]);
+    config.tavilyApiKey = realTavily;
     rows.push({ c, r, failures });
     console.log(`${failures.length ? "FAIL" : "PASS"} (${(r.ms / 1000).toFixed(1)}s${failures.length ? " — " + failures.join("; ") : ""})`);
   }
@@ -246,8 +311,8 @@ async function main() {
   ].join("\n");
 
   mkdirSync("eval", { recursive: true });
-  writeFileSync("eval/results.md", redact(report));
-  console.log(`\n${pass}/${rows.length} passed — report written to eval/results.md`);
+  writeFileSync(process.env.EVAL_OUT || "eval/results.md", redact(report));
+  console.log(`\n${pass}/${rows.length} passed — report written to ${process.env.EVAL_OUT || "eval/results.md"}`);
   rmSync(DB, { force: true });
   for (const ext of ["-wal", "-shm"]) rmSync(DB + ext, { force: true });
   process.exit(0);

@@ -157,6 +157,26 @@ export const geminiProvider: Provider = {
     return { text, blocked: null, model: pinned ?? config.geminiModel };
   },
 
+  async complete(system: string, prompt: string): Promise<string> {
+    // Same resilience as the main loop: fall through models on overload/quota.
+    let lastErr: unknown;
+    for (const model of [...new Set([config.geminiMemoryModel, ...modelChain()])]) {
+      try {
+        const res = await ai().models.generateContent({
+          model,
+          contents: prompt,
+          config: { systemInstruction: system, responseMimeType: "application/json" },
+        });
+        return res.text ?? "";
+      } catch (err) {
+        lastErr = err;
+        if (!(err instanceof ApiError && [429, 500, 503].includes(err.status))) throw err;
+        unhealthyUntil.set(model, Date.now() + cooldownMs(err.status));
+      }
+    }
+    throw lastErr;
+  },
+
   describeError(err: unknown): string {
     if (err instanceof ApiError) {
       if (err.status === 429)

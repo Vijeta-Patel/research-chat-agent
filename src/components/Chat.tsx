@@ -1,7 +1,7 @@
 "use client";
 
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import type { AgentEvent, CheckResult, MemoryRecord, MemoryReport, Source, StoredMessage } from "@/lib/types";
+import type { AgentEvent, CheckResult, MemoryRecord, MemoryReport, Source, StoredMessage, TurnMeta } from "@/lib/types";
 import { Answer, SourceList, fmtDate } from "@/components/Answer";
 import { Cat, CatAvatar, CatLoader, PawDots, type Answerer, type Phase } from "@/components/Cats";
 
@@ -19,6 +19,7 @@ interface UiMessage {
   notice?: string;
   pending?: boolean;
   ms?: number;
+  turn?: TurnMeta;
 }
 interface ConvSummary { id: string; title: string; updatedAt: string }
 
@@ -31,6 +32,7 @@ const EXAMPLES = [
 
 const fromStored = (m: StoredMessage): UiMessage => ({
   id: m.id, role: m.role, text: m.text, sources: m.sources, memory: m.memory, searches: [], checks: m.checks,
+  turn: m.turn, ms: m.turn?.totalMs,
 });
 
 export default function Chat() {
@@ -149,7 +151,7 @@ export default function Chat() {
       case "text": patchLast((m) => ({ ...m, text: m.text + e.delta })); break;
       case "checks": patchLast((m) => ({ ...m, checks: e.result })); break;
       case "revision": patchLast((m) => ({ ...m, text: e.text, checks: e.result, notice: [m.notice, e.note].filter(Boolean).join(" · ") })); break;
-      case "done": patchLast((m) => ({ ...m, id: e.messageId, ms: e.ms, pending: false })); break;
+      case "done": patchLast((m) => ({ ...m, id: e.messageId, ms: e.ms, turn: e.turn, pending: false })); break;
       case "notice": patchLast((m) => ({ ...m, notice: [m.notice, e.message].filter(Boolean).join(" · ") })); break;
       case "error": patchLast((m) => ({ ...m, error: e.message })); break;
     }
@@ -214,12 +216,8 @@ export default function Chat() {
                       {m.pending && m.text && <PawDots />}
                       {!m.pending && m.text && <SourceList text={m.text} sources={sourceMap} extra={m.sources} />}
                       {!m.pending && m.checks && <Checks c={m.checks} />}
-                      {(m.notice || m.ms !== undefined) && (
-                        <div className="mt-2 flex flex-wrap gap-x-3 font-mono text-[10px] text-faint">
-                          {m.notice && <span>{m.notice}</span>}
-                          {m.ms !== undefined && <span>{(m.ms / 1000).toFixed(1)}s</span>}
-                        </div>
-                      )}
+                      {m.notice && <div className="mt-2 font-mono text-[10px] text-faint">{m.notice}</div>}
+                      {!m.pending && m.turn && <HowIGotThis turn={m.turn} memory={m.memory} sources={m.sources} />}
                     </div>
                   </div>
                 )}
@@ -326,6 +324,42 @@ function Checks({ c }: { c: CheckResult }) {
       <summary className="cursor-pointer select-none font-mono text-[11px]">auto-check · verify {items.length === 1 ? "one point" : `${items.length} points`} before relying on this</summary>
       <ul className="mt-1 list-disc pl-5">{items.map((t) => <li key={t}>{t}</li>)}</ul>
       {c.uncitedSentences.length > 0 && <ul className="mt-1 list-disc pl-5 text-muted">{c.uncitedSentences.slice(0, 3).map((s) => <li key={s}>&ldquo;{s}&rdquo;</li>)}</ul>}
+    </details>
+  );
+}
+
+// "How I got this": the turn ledger for one answer — what the harness did, in
+// order, with timings. Makes the architecture visible while you chat.
+function HowIGotThis({ turn, memory, sources }: { turn: TurnMeta; memory: MemoryRecord[]; sources: Source[] }) {
+  const sec = (ms: number) => `${(ms / 1000).toFixed(1)}s`;
+  const read = { full: 0, rendered: 0, snippet: 0 };
+  for (const s of sources) if (s.read) read[s.read]++;
+  const kinds = memory.reduce<Record<string, number>>((a, r) => ({ ...a, [r.kind]: (a[r.kind] ?? 0) + 1 }), {});
+  const icon: Record<string, string> = { memory: "◆", model: "●", search: "⌕", guard: "▲", repair: "↺" };
+  return (
+    <details className="group mt-3 text-[11px]">
+      <summary className="cursor-pointer select-none font-mono text-faint hover:text-ink">
+        how i got this · {sec(turn.totalMs)}{turn.firstTokenMs != null ? ` · first word ${sec(turn.firstTokenMs)}` : ""} · {turn.searches} search{turn.searches === 1 ? "" : "es"}
+      </summary>
+      <div className="mt-2 space-y-2 rounded-[10px] bg-card px-3 py-2.5 font-mono text-[10.5px] leading-relaxed text-muted">
+        <div><span className="text-ink">{turn.model}</span> via {turn.provider}{turn.revised ? " · answer revised after checks" : ""}</div>
+        {memory.length > 0 && (
+          <div>memory used: {Object.entries(kinds).map(([k, n]) => `${n} ${k}`).join(" · ")}</div>
+        )}
+        {sources.length > 0 && (
+          <div>pages: {read.full} read in full · {read.rendered} rendered · {read.snippet} snippet only</div>
+        )}
+        <ol className="space-y-0.5">
+          {turn.trace.map((t, i) => (
+            <li key={i} className="flex gap-2">
+              <span className="w-3 shrink-0 text-faint">{icon[t.step] ?? "·"}</span>
+              <span className="min-w-0 flex-1 break-words"><span className="text-ink">{t.step}</span> {t.detail}</span>
+              <span className="shrink-0 text-faint">{t.ms ? sec(t.ms) : ""}</span>
+            </li>
+          ))}
+        </ol>
+        {turn.notices.length > 0 && <div className="text-faint">{turn.notices.join(" · ")}</div>}
+      </div>
     </details>
   );
 }

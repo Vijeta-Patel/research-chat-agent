@@ -34,6 +34,8 @@ export interface GenerateResult {
 export interface Provider {
   name: string;
   generate(input: GenerateInput, hooks: GenerateHooks): Promise<GenerateResult>;
+  /** One cheap, tool-free completion (background memory distillation). Returns raw text. */
+  complete(system: string, prompt: string): Promise<string>;
   describeError(err: unknown): string;
 }
 
