@@ -3,6 +3,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type { AgentEvent, CheckResult, MemoryRecord, MemoryReport, Source, StoredMessage } from "@/lib/types";
 import { Answer, SourceList, fmtDate } from "@/components/Answer";
+import { Cat, CatAvatar, CatLoader, PawDots, type Answerer, type Phase } from "@/components/Cats";
 
 interface SearchStep { query: string; status: "running" | "done" | "error"; count: number; error?: string }
 interface UiMessage {
@@ -38,6 +39,7 @@ export default function Chat() {
   const [messages, setMessages] = useState<UiMessage[]>([]);
   const [input, setInput] = useState("");
   const [busy, setBusy] = useState(false);
+  const [showMemory, setShowMemory] = useState(false);
   const abortRef = useRef<AbortController | null>(null);
   const bottomRef = useRef<HTMLDivElement>(null);
 
@@ -154,148 +156,161 @@ export default function Chat() {
   }
 
   return (
-    <div className="flex h-dvh w-full overflow-hidden bg-paper text-ink">
-      {/* Sidebar: memory */}
-      <aside className="hidden w-64 shrink-0 flex-col bg-night text-night-ink [color-scheme:dark] md:flex">
-        <div className="px-4 pb-3 pt-5">
-          <div className="pixel text-xl tracking-tight">research chat</div>
-          <div className="mt-0.5 font-mono text-[10px] uppercase tracking-[0.14em] text-night-muted">search · remember · cite</div>
-        </div>
-        <div className="px-3">
-          <button onClick={newChat} className="w-full rounded-[9px] bg-accent px-3 py-2 text-sm font-medium text-white transition hover:brightness-110">
-            new chat
+    <div className="flex h-dvh w-full flex-col overflow-hidden bg-paper text-ink">
+      <header className="flex items-center justify-between px-5 py-3">
+        <button onClick={newChat} className="display text-lg tracking-tight" title="Start a new chat">research chat</button>
+        <div className="flex items-center gap-1">
+          {messages.length > 0 && (
+            <button onClick={newChat} disabled={busy} className="h-11 rounded-[10px] px-3 text-sm text-muted hover:text-ink disabled:opacity-40">new chat</button>
+          )}
+          <button onClick={() => setShowMemory((v) => !v)} aria-label="Past chats" aria-expanded={showMemory}
+            className="flex h-11 w-11 items-center justify-center rounded-[10px] hover:bg-warm">
+            <Cat sprite="cali" scale={2} />
           </button>
         </div>
-        <div className="mt-5 px-4 pb-1.5 font-mono text-[10px] uppercase tracking-[0.14em] text-night-muted">memory · past chats</div>
-        <nav className="flex-1 overflow-y-auto px-2 pb-4">
-          {conversations.length === 0 && <p className="px-2 text-xs text-night-muted">nothing yet — I&rsquo;ll remember what we talk about.</p>}
-          {conversations.map((c) => (
-            <div key={c.id} className={`group flex items-center rounded-[9px] ${c.id === convId ? "bg-white/12" : "hover:bg-white/6"}`}>
-              <button onClick={() => openConversation(c.id)} className="min-w-0 flex-1 px-2.5 py-1.5 text-left">
-                <div className="truncate text-[13px]">{c.title}</div>
-                <div className="font-mono text-[10px] text-night-muted">{fmtDate(c.updatedAt)}</div>
-              </button>
-              <button onClick={() => removeConversation(c.id)} title="Forget this conversation"
-                className="mr-1 hidden rounded px-1.5 text-night-muted hover:text-orange group-hover:block">×</button>
-            </div>
-          ))}
-        </nav>
-      </aside>
+      </header>
 
-      {/* Main */}
-      <main className="flex min-w-0 flex-1 flex-col">
-        <header className="flex items-center justify-between px-4 py-3 md:hidden">
-          <div className="pixel text-lg">research chat</div>
-          <button onClick={newChat} className="rounded-[9px] bg-accent px-3 py-1.5 text-xs font-medium text-white">new chat</button>
-        </header>
+      {showMemory && (
+        <MemoryPanel conversations={conversations} currentId={convId}
+          onOpen={(id) => { setShowMemory(false); void openConversation(id); }}
+          onRemove={removeConversation} onClose={() => setShowMemory(false)} />
+      )}
 
-        <div className="flex-1 overflow-y-auto">
-          <div className="mx-auto max-w-3xl px-4 py-8">
-            {messages.length === 0 && (
-              <div className="mt-14 text-center">
-                <div className="mx-auto mb-5 inline-block rounded-full bg-card px-3 py-1 font-mono text-[10px] uppercase tracking-[0.14em] text-muted">
-                  web search · memory · citations
-                </div>
-                <h1 className="pixel text-4xl leading-tight tracking-tight sm:text-5xl">ask me anything.</h1>
-                <p className="mx-auto mt-3 max-w-md text-[15px] text-muted">
-                  I search the web, cite every claim, and remember our past chats — so you can ask
-                  &ldquo;what did I ask you last tuesday, is it still true?&rdquo;
-                </p>
-                <div className="mt-10 grid gap-2 text-left sm:grid-cols-2">
-                  {EXAMPLES.map((ex, i) => (
-                    <button key={ex} onClick={() => send(ex)}
-                      className="group rounded-xl bg-card p-4 text-left text-sm transition hover:-translate-y-0.5 hover:shadow-[0_6px_24px_rgba(0,0,0,0.06)]">
-                      <span className="mb-1 block font-mono text-[10px] text-faint">0{i + 1}</span>
+      <div className="flex-1 overflow-y-auto">
+        <div className="mx-auto max-w-[720px] px-5 pb-10 pt-6">
+          {messages.length === 0 && (
+            <div className="mt-[8vh] flex flex-col items-center text-center">
+              <div className="flex items-end gap-6">
+                <Cat sprite="tux" scale={6} alt="Tux, the tuxedo cat, who searches the web" />
+                <Cat sprite="cali" scale={4} alt="Cali, the calico kitten, who remembers past chats" />
+              </div>
+              <h1 className="display mt-7 text-4xl leading-tight tracking-tight sm:text-5xl">ask me anything.</h1>
+              <ul className="mt-10 flex w-full max-w-md flex-col gap-1 text-left">
+                {EXAMPLES.map((ex) => (
+                  <li key={ex}>
+                    <button onClick={() => send(ex)} className="w-full rounded-[10px] px-3 py-2.5 text-left text-[15px] text-muted hover:bg-card hover:text-ink">
                       {ex}
                     </button>
-                  ))}
-                </div>
-              </div>
-            )}
+                  </li>
+                ))}
+              </ul>
+            </div>
+          )}
 
-            {messages.map((m, i) =>
-              m.role === "user" ? (
-                <div key={m.id + i} className="my-5 flex justify-end">
-                  <div className="max-w-[85%] whitespace-pre-wrap rounded-xl rounded-br-[4px] bg-ink px-4 py-2.5 text-[15px] font-normal text-paper">{m.text}</div>
-                </div>
-              ) : (
-                <div key={m.id + i} className="my-5 rounded-xl bg-card px-5 py-4">
-                  <Activity m={m} />
-                  {m.text && (
-                    <Answer text={m.text} sources={sourceMap} memory={new Map(m.memory.map((r) => [r.id, r]))} onOpenConversation={openConversation} />
-                  )}
-                  {m.pending && !m.text && (
-                    <div className="flex items-center gap-2 font-mono text-xs text-muted">
-                      <span className="inline-block h-2 w-2 animate-pulse rounded-full bg-accent" />
-                      {phase(m)}
-                    </div>
-                  )}
-                  {m.error && <div className="mt-2 rounded-[9px] bg-orange-soft px-3 py-2 text-sm text-ink">{m.error}</div>}
-                  {!m.pending && m.text && <SourceList text={m.text} sources={sourceMap} extra={m.sources} />}
-                  {!m.pending && m.checks && <Checks c={m.checks} />}
-                  {(m.notice || m.ms !== undefined) && (
-                    <div className="mt-2 flex flex-wrap gap-x-3 font-mono text-[10px] text-faint">
-                      {m.notice && <span>ℹ {m.notice}</span>}
-                      {m.ms !== undefined && <span>{(m.ms / 1000).toFixed(1)}s</span>}
-                    </div>
-                  )}
-                </div>
-              ),
-            )}
-            <div ref={bottomRef} />
-          </div>
-        </div>
-
-        <form onSubmit={(e) => { e.preventDefault(); void send(input); }} className="px-4 pb-4 pt-2">
-          <div className="mx-auto flex max-w-3xl items-end gap-2 rounded-xl bg-card p-2 shadow-[0_2px_16px_rgba(0,0,0,0.05)]">
-            <textarea
-              value={input}
-              onChange={(e) => setInput(e.target.value)}
-              onKeyDown={(e) => { if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); void send(input); } }}
-              rows={1}
-              placeholder="ask anything…"
-              className="max-h-40 min-h-[40px] flex-1 resize-none bg-transparent px-2 py-2 text-[15px] outline-none placeholder:text-faint"
-            />
-            {busy ? (
-              <button type="button" onClick={() => abortRef.current?.abort()} className="h-10 rounded-[9px] bg-paper px-4 text-sm text-ink">stop</button>
+          {messages.map((m, i) =>
+            m.role === "user" ? (
+              <h2 key={m.id + i} className={`display whitespace-pre-wrap pl-16 text-[22px] leading-snug ${i === 0 ? "mt-2" : "mt-14"}`}>{m.text}</h2>
             ) : (
-              <button type="submit" disabled={!input.trim()} className="h-10 rounded-[9px] bg-accent px-4 text-sm font-medium text-white transition hover:brightness-110 disabled:opacity-35">send</button>
-            )}
-          </div>
-          <div className="mx-auto mt-1.5 max-w-3xl text-center font-mono text-[10px] text-faint">answers cite their sources · check anything important</div>
-        </form>
-      </main>
+              <div key={m.id + i} className="mt-5">
+                {m.pending && !m.text ? (
+                  <div className="pl-16"><CatLoader {...loading(m)} /></div>
+                ) : (
+                  <div className="flex items-start gap-5">
+                    <div className="shrink-0 pt-1"><CatAvatar who={answerer(m)} /></div>
+                    <div className="min-w-0 flex-1">
+                      {m.text && (
+                        <Answer text={m.text} sources={sourceMap} memory={new Map(m.memory.map((r) => [r.id, r]))} onOpenConversation={openConversation} />
+                      )}
+                      {m.pending && m.text && <PawDots />}
+                      {!m.pending && m.text && <SourceList text={m.text} sources={sourceMap} extra={m.sources} />}
+                      {!m.pending && m.checks && <Checks c={m.checks} />}
+                      {(m.notice || m.ms !== undefined) && (
+                        <div className="mt-2 flex flex-wrap gap-x-3 font-mono text-[10px] text-faint">
+                          {m.notice && <span>{m.notice}</span>}
+                          {m.ms !== undefined && <span>{(m.ms / 1000).toFixed(1)}s</span>}
+                        </div>
+                      )}
+                    </div>
+                  </div>
+                )}
+                {m.error && <div className="ml-16 mt-2 rounded-[10px] bg-orange-soft px-3 py-2 text-sm text-ink">{m.error}</div>}
+              </div>
+            ),
+          )}
+          <div ref={bottomRef} />
+        </div>
+      </div>
+
+      <form onSubmit={(e) => { e.preventDefault(); void send(input); }} className="px-5 pb-5 pt-2">
+        <div className="mx-auto flex max-w-[720px] items-end gap-2 rounded-[14px] bg-card p-1.5 pl-4">
+          <label htmlFor="ask" className="sr-only">Ask a question</label>
+          <textarea
+            id="ask"
+            value={input}
+            onChange={(e) => setInput(e.target.value)}
+            onKeyDown={(e) => { if (e.key === "Enter" && !e.shiftKey) { e.preventDefault(); void send(input); } }}
+            rows={1}
+            placeholder="ask…"
+            className="max-h-40 min-h-[44px] flex-1 resize-none bg-transparent py-2.5 text-base outline-none placeholder:text-faint"
+          />
+          {busy ? (
+            <button type="button" onClick={() => abortRef.current?.abort()} aria-label="Stop"
+              className="flex h-11 w-11 items-center justify-center rounded-[10px] bg-paper text-ink">
+              <svg width="14" height="14" viewBox="0 0 14 14" aria-hidden="true"><rect x="2" y="2" width="10" height="10" rx="2" fill="currentColor" /></svg>
+            </button>
+          ) : (
+            <button type="submit" disabled={!input.trim()} aria-label="Send"
+              className="flex h-11 w-11 items-center justify-center rounded-[10px] bg-accent text-white transition hover:brightness-110 disabled:opacity-35">
+              <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true"><path d="M12 19V5" /><path d="M5 12l7-7 7 7" /></svg>
+            </button>
+          )}
+        </div>
+      </form>
     </div>
   );
 }
 
-// What the agent is doing right now, derived from the events received so far.
-function phase(m: UiMessage): string {
-  if (!m.memoryReport) return "Checking memory…";
-  const running = m.searches.filter((s) => s.status === "running").length;
-  if (running) return `Searching the web (${running} quer${running === 1 ? "y" : "ies"})…`;
-  if (m.searches.length) {
-    const n = m.searches.reduce((a, s) => a + s.count, 0);
-    return `Reading ${n} result${n === 1 ? "" : "s"} and writing the answer…`;
-  }
-  return "Thinking…";
+// Which cat signs the answer: web search → Tux, memory → Cali, both → both.
+function answerer(m: UiMessage): Answerer {
+  const memoryIds = new Set(m.memory.map((r) => r.id));
+  const citedMemory = (m.text.match(/\bM\d+\b/g) ?? []).some((id) => memoryIds.has(id));
+  const usedWeb = m.sources.length > 0 || m.searches.length > 0;
+  if (citedMemory && usedWeb) return "both";
+  if (citedMemory) return "cali";
+  return "tux";
 }
 
-function Activity({ m }: { m: UiMessage }) {
-  const note = m.memoryReport?.note;
-  if (!note && !m.searches.length) return null;
+// Which loading animation to show, from the events received so far.
+function loading(m: UiMessage): { phase: Phase; label: string } {
+  if (!m.memoryReport) return { phase: "remembering", label: "cali is checking memory…" };
+  const running = m.searches.filter((s) => s.status === "running");
+  if (running.length) return { phase: "searching", label: `tux is searching · ${running[running.length - 1].query}` };
+  if (m.searches.length) {
+    const n = m.searches.reduce((a, s) => a + s.count, 0);
+    return { phase: "reading", label: `tux is reading ${n} page${n === 1 ? "" : "s"}` };
+  }
+  return { phase: "writing", label: "thinking…" };
+}
+
+function MemoryPanel(props: {
+  conversations: ConvSummary[];
+  currentId?: string;
+  onOpen: (id: string) => void;
+  onRemove: (id: string) => void;
+  onClose: () => void;
+}) {
   return (
-    <div className="mb-3 flex flex-wrap gap-1.5 font-mono text-[11px]">
-      {note && (
-        <span className="rounded-full bg-warm px-2.5 py-0.5 text-ink" title={m.memoryReport?.searchedTerms.length ? `Keywords searched: ${m.memoryReport.searchedTerms.join(", ")}` : undefined}>
-          memory · {note}
-        </span>
-      )}
-      {m.searches.map((s, i) => (
-        <span key={i} title={s.error} className={`rounded-full px-2.5 py-0.5 ${s.status === "error" ? "bg-orange-soft text-ink" : "bg-accent-soft text-accent-ink"}`}>
-          {s.status === "running" ? "searching" : s.status === "error" ? "failed" : "searched"} · {s.query}{s.status === "done" ? ` · ${s.count}` : ""}
-        </span>
-      ))}
+    <div className="fixed inset-0 z-30 flex justify-end" onKeyDown={(e) => { if (e.key === "Escape") props.onClose(); }}>
+      <button aria-label="Close past chats" onClick={props.onClose} className="absolute inset-0 bg-black/10" />
+      <aside aria-label="Past chats" className="relative flex h-full w-80 max-w-[90vw] flex-col bg-card shadow-[0_0_40px_rgba(0,0,0,0.12)]">
+        <div className="flex items-end justify-between px-5 pb-3 pt-5">
+          <div className="display text-lg">past chats</div>
+          <Cat sprite="cali-nap" scale={3} />
+        </div>
+        <nav className="flex-1 overflow-y-auto px-2 pb-4">
+          {props.conversations.length === 0 && <p className="px-3 text-sm text-muted">nothing yet.</p>}
+          {props.conversations.map((c) => (
+            <div key={c.id} className={`group flex items-center rounded-[10px] ${c.id === props.currentId ? "bg-warm" : "hover:bg-paper"}`}>
+              <button onClick={() => props.onOpen(c.id)} className="min-w-0 flex-1 px-3 py-2 text-left">
+                <div className="truncate text-sm">{c.title}</div>
+                <div className="font-mono text-[10px] text-faint">{fmtDate(c.updatedAt)}</div>
+              </button>
+              <button onClick={() => props.onRemove(c.id)} aria-label={`Forget "${c.title}"`} title="Forget this conversation"
+                className="mr-1 h-9 w-9 rounded-[8px] text-faint opacity-0 hover:text-orange focus:opacity-100 group-hover:opacity-100">×</button>
+            </div>
+          ))}
+        </nav>
+      </aside>
     </div>
   );
 }

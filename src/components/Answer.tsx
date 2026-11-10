@@ -4,24 +4,25 @@ import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
 import type { MemoryRecord, Source } from "@/lib/types";
 
+// Plain coloured words, no pill backgrounds.
 const TIER_BADGE: Record<Source["tier"], { label: string; cls: string }> = {
-  official: { label: "official", cls: "bg-accent text-white" },
-  primary: { label: "primary", cls: "bg-accent text-white" },
-  news: { label: "news", cls: "bg-ink text-paper" },
-  community: { label: "community", cls: "bg-orange-soft text-ink" },
-  listicle: { label: "roundup", cls: "bg-orange text-white" },
-  other: { label: "web", cls: "bg-warm text-ink" },
+  official: { label: "official", cls: "text-accent-ink" },
+  primary: { label: "primary", cls: "text-accent-ink" },
+  news: { label: "news", cls: "text-ink" },
+  community: { label: "community", cls: "text-muted" },
+  listicle: { label: "roundup", cls: "text-orange" },
+  other: { label: "web", cls: "text-muted" },
 };
 
 export function TierBadge({ tier }: { tier: Source["tier"] }) {
   const b = TIER_BADGE[tier];
-  return <span className={`shrink-0 rounded-full px-1.5 py-px font-mono text-[9.5px] lowercase ${b.cls}`}>{b.label}</span>;
+  return <span className={`shrink-0 font-mono text-[10px] lowercase ${b.cls}`}>{b.label}</span>;
 }
 
 export const fmtDate = (iso: string | null) =>
   iso ? new Date(iso).toLocaleDateString(undefined, { day: "numeric", month: "short", year: "numeric" }) : "undated";
 
-// Turn "[S3]" / "[S3, S5]" / "[M2]" into links the renderer can style as chips.
+// Turn "[S3]" / "[S3, S5]" / "[M2]" into links the renderer can style as superscript numbers.
 function linkCitations(text: string): string {
   return text.replace(/\[((?:[SM]\d+)(?:\s*,\s*[SM]\d+)*)\]/g, (_m, ids: string) =>
     ids.split(/\s*,\s*/).map((id) => `[${id}](#cite-${id})`).join(""),
@@ -49,7 +50,7 @@ export function Answer(props: {
                 return (
                   <span className="group relative inline-block align-super">
                     <a href={s.url} target="_blank" rel="noreferrer"
-                      className="mx-0.5 rounded-full bg-accent-soft px-1.5 font-mono text-[10px] font-medium text-accent-ink no-underline hover:bg-accent hover:text-white">
+                      className="mx-0.5 font-mono text-[11px] font-medium text-accent-ink no-underline hover:underline">
                       {id.slice(1)}
                     </a>
                     <span className="pointer-events-none absolute bottom-full left-1/2 z-20 mb-1.5 hidden w-80 -translate-x-1/2 rounded-xl bg-night p-3 text-xs font-light leading-snug text-night-ink shadow-[0_8px_30px_rgba(0,0,0,0.25)] group-hover:block">
@@ -64,7 +65,7 @@ export function Answer(props: {
                 return (
                   <button type="button" onClick={() => props.onOpenConversation(m.conversationId)}
                     title={`From our conversation "${m.conversationTitle}" on ${fmtDate(m.createdAt)}`}
-                    className="mx-0.5 align-super rounded-full bg-warm px-1.5 font-mono text-[10px] text-ink hover:bg-ink hover:text-paper">
+                    className="mx-0.5 align-super font-mono text-[10px] text-muted underline decoration-dotted underline-offset-2 hover:text-ink">
                     memory {fmtDate(m.createdAt)}
                   </button>
                 );

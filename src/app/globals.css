@@ -2,20 +2,21 @@
 
 @custom-variant dark (@media (prefers-color-scheme: dark));
 
-/* Palette: near-black ink on light greys, one bright blue accent, a little orange. */
+/* Palette: near-black ink on warm off-white, one blue accent, calico orange. */
 :root {
-  --paper: #f2f2f2;       /* page */
-  --card: #ffffff;        /* answer surfaces, inputs */
+  --paper: #f4f2ee;       /* page */
+  --card: #ffffff;        /* inputs, popovers */
   --warm: #e6e4df;        /* warm off-white accents */
   --ink: #1c1c1c;         /* text */
   --muted: #6b6b6b;       /* secondary text */
-  --faint: #999999;       /* meta */
+  --faint: #737373;       /* meta (4.5:1 on paper) */
+  --paw: #c9c4ba;         /* paw-print trail */
   --line: #e3e3e3;        /* borders */
   --night: #000000;       /* sidebar */
   --night-ink: #ffffff;
   --night-muted: rgba(255, 255, 255, 0.55);
   --night-line: rgba(255, 255, 255, 0.08);
-  --accent: #0099ff;
+  --accent: #0077cc;
   --accent-ink: #0077cc;
   --accent-soft: #e5f4ff;
   --orange: #ff8133;
@@ -24,12 +25,13 @@
 
 @media (prefers-color-scheme: dark) {
   :root {
-    --paper: #000000;
-    --card: #1c1c1c;
-    --warm: #232526;
+    --paper: #121110;
+    --card: #1f1e1c;
+    --warm: #2a2826;
     --ink: #ededed;
     --muted: #a3a3a3;
-    --faint: #7a7a7a;
+    --faint: #8f8f8f;
+    --paw: #4a4640;
     --line: #262626;
     --night: #0b0b0b;
     --night-ink: #ffffff;
@@ -62,7 +64,32 @@
   --color-orange-soft: var(--orange-soft);
   --font-sans: var(--font-sans-family), system-ui, sans-serif;
   --font-mono: var(--font-mono-family), ui-monospace, monospace;
-  --font-pixel: var(--font-pixel-family), var(--font-mono-family), monospace;
+  --font-display: var(--font-display-family), var(--font-sans-family), sans-serif;
+}
+
+.display { font-family: var(--font-display-family), var(--font-sans-family), sans-serif; font-weight: 500; }
+
+/* Cats: crisp pixels, and a faint glow so the tuxedo doesn't vanish in dark mode. */
+.pixelated { image-rendering: pixelated; }
+@media (prefers-color-scheme: dark) { .pixelated { filter: drop-shadow(0 0 1px rgba(255, 255, 255, 0.55)); } }
+
+@keyframes cat-hop { 0%, 60%, 100% { transform: translateY(0); } 20% { transform: translateY(-14px); } 40% { transform: translateY(-4px); } }
+@keyframes cat-walk { from { left: 0; } to { left: calc(100% - 45px); } }
+@keyframes cat-bob { 0%, 100% { transform: translateY(0); } 50% { transform: translateY(-3px); } }
+@keyframes cat-paw { 0%, 8% { opacity: 0; } 12%, 80% { opacity: 1; } 100% { opacity: 0; } }
+@keyframes cat-look-a { 0%, 49.9% { opacity: 1; } 50%, 100% { opacity: 0; } }
+@keyframes cat-look-b { 0%, 49.9% { opacity: 0; } 50%, 100% { opacity: 1; } }
+@keyframes cat-dot { 0%, 100% { transform: translateY(0); opacity: 0.35; } 30% { transform: translateY(-6px); opacity: 1; } }
+.cat-hop { animation: cat-hop 1.1s steps(6) infinite; }
+.cat-walk { animation: cat-walk 3.2s steps(16) infinite; }
+.cat-bob { animation: cat-bob 0.4s steps(2) infinite; }
+.cat-paw { opacity: 0; animation: cat-paw 3.2s infinite; }
+.cat-look-a { animation: cat-look-a 1.6s infinite; }
+.cat-look-b { animation: cat-look-b 1.6s infinite; }
+.cat-dot { animation: cat-dot 1s ease-in-out infinite; }
+@media (prefers-reduced-motion: reduce) {
+  .cat-hop, .cat-walk, .cat-bob, .cat-paw, .cat-look-a, .cat-look-b, .cat-dot { animation: none; opacity: 1; }
+  .cat-look-b { opacity: 0; }
 }
 
 body {
@@ -89,5 +116,3 @@ body {
 .prose-chat th, .prose-chat td { border-bottom: 1px solid var(--line); padding: 0.5em 0.75em 0.5em 0; text-align: left; vertical-align: top; }
 .prose-chat th { font-family: var(--font-mono-family), monospace; font-weight: 500; font-size: 0.78em; text-transform: uppercase; letter-spacing: 0.04em; color: var(--muted); }
 .prose-chat a { color: var(--accent-ink); }
-
-.pixel { font-family: var(--font-pixel-family), monospace; }
