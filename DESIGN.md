@@ -1,5 +1,7 @@
 # DESIGN
 
+*One-page summary. Every decision with its options, evidence and the bugs that shaped it: **[docs/DECISIONS.md](docs/DECISIONS.md)**.*
+
 ## How it works
 
 ```
