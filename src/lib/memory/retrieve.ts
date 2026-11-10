@@ -1,6 +1,7 @@
 import * as chrono from "chrono-node";
 import { cosine, embed, embeddingsEnabled } from "@/lib/memory/embed";
 import {
+  withNeighbours,
   allConversationMemories, claimKey, claimsForConversations, getConversationMemory, getProfile,
   searchClaimHistory, searchConversationMemory, type Claim,
   historyStats, listConversations, messagesBetween, now, recentConversationMessages, searchMessages, type MessageHit,
@@ -40,7 +41,14 @@ const STOP = new Set(
     "year years day days monday tuesday wednesday thursday friday saturday sunday january february march april may june " +
     "july august september october november december jan feb mar apr jun jul aug sep sept oct nov dec yesterday tomorrow " +
     "asked ask said tell told answer answered correct changed change anything something thing things please thanks hi hello " +
-    "has have there here them its it's i'm im lets let's get got discuss discussed talk talked chat conversation").split(/\s+/),
+    "has have there here them its it's i'm im lets let's get got discuss discussed talk talked chat conversation " +
+    // Common verbs and filler: they match unrelated chats ("you can't even USE…") and
+    // neighbour expansion would multiply that noise. Recall should key on content words.
+    "use used using uses think thought know knew want wanted need needed make made like liked good great bad " +
+    "really just actually maybe might much many long time times hey yeah yes okay ok sure thing stuff something " +
+    "see saw look looked go going went come came take took give gave try tried work worked works keep kept " +
+    "start started stop stopped help helped would could should will can cannot cant dont didnt doesnt wasnt isnt " +
+    "also still even ever never always often again then than well very more most less least some any every").split(/\s+/),
 );
 
 const fmtDay = (d: Date, tz: string) =>
@@ -76,6 +84,13 @@ export function resolveDates(text: string, clock: UserClock): MemoryReport["date
   const meaningful = results.filter((r) => !isPresent(r.text));
   for (const r of results) {
     if (isPresent(r.text) && (meaningful.length > 0 || /now/i.test(r.text))) continue;
+    // A memory date must name a day: "3 Nov", "Tuesday", "yesterday", "last week".
+    // Time-only parses ("from 2", "at 5") are not dates. Measured bug: "used it
+    // FROM 2 years" parsed as "2 o'clock today" and pulled in every chat from today.
+    const s0 = r.start;
+    const namesDay = s0.isCertain("day") || s0.isCertain("weekday") || s0.isCertain("month") ||
+      /\b(today|yesterday|week|month|year|ago|tonight|morning|evening)\b/i.test(r.text);
+    if (!namesDay) continue;
     const y = r.start.get("year")!, m = r.start.get("month")!, d = r.start.get("day")!;
     let from = localMidnightUtc(y, m, d, clock.tzOffsetMinutes);
     let to = new Date(from.getTime() + 86_400_000);
@@ -160,7 +175,10 @@ export async function retrieveMemory(
     hits: messagesBetween(d.from, d.to, current),
   }));
   const dateHits = perDate.flatMap((d) => d.hits);
-  const kwHits = searchMessages(fts, current, pastRef ? 12 : 4);
+  // A message alone loses its context: "BIODERMA AUTODERM" was the reply to "which
+  // cream?" after "a barrier cream for two years". So each keyword hit brings its
+  // neighbours (2 before, 1 after) from the same conversation.
+  const kwHits = withNeighbours(searchMessages(fts, current, pastRef ? 8 : 3));
   const topicConvs = pastRef ? searchConversationMemory(fts, current, 8) : [];
   let vectorConvs: string[] = [];
   let vectorState = "off";

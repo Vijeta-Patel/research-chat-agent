@@ -29,6 +29,7 @@ const SYSTEM = `You maintain the long-term memory of a research assistant. You r
 Rules:
 - claims: only checkable facts (prices, plan names, limits, dates, versions, launches). attribute is generic and reusable ("Pro plan price", "free tier", "latest release"). value is short and exact as stated ("$25/month"). source must be one of the given source IDs.
 - profile: only what the user said about themselves (e.g. key "team size", value "20-person sales team"; key "location", value "India"). Never infer. Never include secrets.
+- profile keys must be SPECIFIC ("moisturizer", "cleanser", "serum", "crm in use", "team size") — never generic keys like "current product" that different things would overwrite. When the user adds detail to something already in KNOWN PROFILE, return the SAME key with a MERGED value that keeps the earlier detail (e.g. "moisturizer": "Bioderma Atoderm (barrier repair cream), used ~2 years, worked well").
 - No markdown, no commentary — JSON only.`;
 
 interface DistillInput {

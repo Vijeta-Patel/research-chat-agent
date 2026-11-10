@@ -453,6 +453,22 @@ export function searchMessages(ftsQuery: string, excludeConversation?: string, l
   }
 }
 
+/** Each hit plus up to `before`/`after` neighbouring messages in its conversation, in order, deduped. */
+export function withNeighbours(hits: MessageHit[], before = 2, after = 1): MessageHit[] {
+  const out: MessageHit[] = [];
+  const seen = new Set<string>();
+  for (const h of hits) {
+    const prev = getDb()
+      .prepare(`${HIT_SELECT} WHERE m.conversation_id = ? AND m.created_at < ? ORDER BY m.created_at DESC LIMIT ?`)
+      .all(h.conversationId, h.createdAt, before).map(toHit).reverse();
+    const next = getDb()
+      .prepare(`${HIT_SELECT} WHERE m.conversation_id = ? AND m.created_at > ? ORDER BY m.created_at ASC LIMIT ?`)
+      .all(h.conversationId, h.createdAt, after).map(toHit);
+    for (const m of [...prev, h, ...next]) if (!seen.has(m.id)) { seen.add(m.id); out.push(m); }
+  }
+  return out;
+}
+
 export function recentConversationMessages(limitConversations: number, excludeConversation?: string): MessageHit[] {
   const convs = getDb()
     .prepare("SELECT id FROM conversations WHERE id != ? ORDER BY updated_at DESC LIMIT ?")
