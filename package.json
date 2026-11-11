@@ -12,6 +12,7 @@
   },
   "dependencies": {
     "@anthropic-ai/claude-agent-sdk": "^0.3.322",
+    "@anthropic-ai/sdk": "^1.7.0",
     "@mozilla/readability": "^0.6.0",
     "chrono-node": "^2.10.3",
     "linkedom": "^0.18.15",

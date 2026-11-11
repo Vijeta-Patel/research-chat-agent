@@ -2,7 +2,7 @@ import { config } from "@/lib/config";
 import { buildTurnPreamble } from "@/lib/agent/prompt";
 import { maskSecrets } from "@/lib/agent/guardrails";
 import { verifyAnswer } from "@/lib/agent/verify";
-import { describeError, generate } from "@/lib/llm/claude";
+import { describeError, generate, runtime } from "@/lib/llm/claude";
 import { addMessage, conversationExists, createConversation, getConversationMemory, getMessages, now, saveTurn } from "@/lib/memory/db";
 import { catchUp, distillTurn, track } from "@/lib/memory/distill";
 import { retrieveMemory, type UserClock } from "@/lib/memory/retrieve";
@@ -119,7 +119,7 @@ export async function runTurn({ conversationId, message: rawMessage, clock, emit
   });
   const totalMs = Date.now() - started;
   const turn: TurnMeta = {
-    provider: "claude",
+    provider: runtime().name,
     model: modelUsed,
     totalMs,
     firstTokenMs,

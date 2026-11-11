@@ -4,8 +4,11 @@
 type Effort = "low" | "medium" | "high" | "xhigh" | "max";
 
 export const config = {
-  // The model: Claude via the Claude Agent SDK. Auth is ANTHROPIC_API_KEY, or
-  // the local Claude Code login when no key is set.
+  // The model: Claude. Primary runtime is the Claude Agent SDK, which runs on
+  // ANTHROPIC_API_KEY or, without one, on the local Claude Code login — this
+  // project was built without an API key. CLAUDE_RUNTIME=api switches to our
+  // own loop on the Messages API (needs ANTHROPIC_API_KEY).
+  claudeRuntime: (process.env.CLAUDE_RUNTIME === "api" ? "api" : "agent-sdk") as "api" | "agent-sdk",
   claudeModel: process.env.CLAUDE_MODEL || "claude-sonnet-5-5",
   // Sonnet 5.5 defaults to "high"; "medium" is the recommended starting point
   // for multi-step tool use and keeps chat latency down.

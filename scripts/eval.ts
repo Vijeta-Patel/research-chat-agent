@@ -48,7 +48,6 @@ const redact = (t: string) => t.split(FAKE_KEY).join("[fake test key]");
 
 const fmt = (d: Date) => d.toLocaleDateString("en-GB", { weekday: "long", day: "numeric", month: "long", timeZone: "UTC" });
 const has = (re: RegExp, text: string, why: string) => (re.test(text) ? null : why);
-const hasNot = (re: RegExp, text: string, why: string) => (re.test(text) ? why : null);
 const cites = (text: string, kind: "S" | "M") => new RegExp(`\\[${kind}\\d+\\]`).test(text);
 
 const CASES: Case[] = [
@@ -296,7 +295,7 @@ async function main() {
   const report = [
     `# Eval results`,
     ``,
-    `Run: ${now.toISOString()} · model \`${config.claudeModel}\``,
+    `Run: ${now.toISOString()} · model \`${config.claudeModel}\` · runtime \`${config.claudeRuntime}\``,
     ``,
     `**${pass}/${rows.length} passed** · median time to first word ${(median(firsts) / 1000).toFixed(1)}s · median total ${(median(totals) / 1000).toFixed(1)}s · ` +
       `citation checks clean on ${cleanCitations}/${factual.length} answers that searched`,
