@@ -1,21 +1,14 @@
 import { Readability } from "@mozilla/readability";
 import { parseHTML } from "linkedom";
 import { config } from "@/lib/config";
+import { postJson } from "@/lib/search/http";
+import { withTimeout } from "@/lib/util";
 
 // Stages 2+3 of web_search: FETCH and READ — ours.
 // Fetch the page ourselves and extract its main text with Mozilla Readability
 // (the engine behind Firefox Reader View). If the page looks JavaScript-rendered
 // (almost no text, or a pricing question but no prices in the text), render it
 // with Firecrawl. If all of that fails, the caller falls back to the provider snippet.
-
-export type ReadMode = "full" | "rendered" | "snippet";
-
-export interface ReadResult {
-  text: string;
-  mode: Exclude<ReadMode, "snippet">;
-  publishedDate: string | null;
-  ms: number;
-}
 
 const UA = "Mozilla/5.0 (compatible; research-chat/1.0; +https://github.com/Vijeta-Patel/research-chat-agent)";
 const MAX_HTML = 3_000_000;
@@ -66,63 +59,52 @@ export function extract(html: string): { title: string; text: string; publishedD
   return { title, text, publishedDate: metaDate(html) };
 }
 
-function looksUnrendered(text: string, query: string): boolean {
-  return text.length < 800 || (PRICE_Q.test(query) && !HAS_PRICE.test(text));
-}
-
-async function firecrawlRender(url: string, signal?: AbortSignal): Promise<string | null> {
-  if (!config.firecrawlApiKey) return null;
-  const res = await fetch("https://api.firecrawl.dev/v2/scrape", {
-    method: "POST",
-    headers: { "Content-Type": "application/json", Authorization: `Bearer ${config.firecrawlApiKey}` },
-    // maxAge: accept Firecrawl's cached render up to 1 day old — much faster, prices rarely change hourly.
-    body: JSON.stringify({ url, formats: ["markdown"], onlyMainContent: true, timeout: 12_000, maxAge: 86_400_000 }),
-    signal: signal ? AbortSignal.any([signal, AbortSignal.timeout(14_000)]) : AbortSignal.timeout(14_000),
-  });
-  if (!res.ok) return null;
-  const json = await res.json();
-  const md: string = json?.data?.markdown ?? "";
-  // Light markdown cleanup: drop images and link targets, keep the text.
-  return md.replace(/!\[[^\]]*\]\([^)]*\)/g, "").replace(/\[([^\]]+)\]\([^)]*\)/g, "$1").trim() || null;
-}
-
 export interface Fetched {
   text: string;
   publishedDate: string | null;
   blocked: boolean; // bot wall / rate limit — rendering may get through
+  failure: string | null; // why we got no text: "HTTP 403", "timed out", "not HTML (application/pdf)"
   ms: number;
 }
 
 /** Fetch + extract with our own reader. Never throws. */
 export async function fetchPage(url: string, signal?: AbortSignal): Promise<Fetched> {
   const t0 = Date.now();
+  const failed = (failure: string, blocked = false): Fetched => ({ text: "", publishedDate: null, blocked, failure, ms: Date.now() - t0 });
   try {
     const res = await fetch(url, {
       headers: { "User-Agent": UA, Accept: "text/html,application/xhtml+xml" },
       redirect: "follow",
-      signal: signal
-        ? AbortSignal.any([signal, AbortSignal.timeout(config.pageFetchTimeoutMs)])
-        : AbortSignal.timeout(config.pageFetchTimeoutMs),
+      signal: withTimeout(config.pageFetchTimeoutMs, signal),
     });
-    const blocked = [401, 403, 429, 503].includes(res.status);
+    if (!res.ok) return failed(`HTTP ${res.status}`, [401, 403, 429, 503].includes(res.status));
     const type = res.headers.get("content-type") ?? "";
-    if (!res.ok || !/html|xml/.test(type)) return { text: "", publishedDate: null, blocked, ms: Date.now() - t0 };
+    if (!/html|xml/.test(type)) return failed(`not HTML (${type.split(";")[0] || "unknown type"})`);
     const out = extract((await res.text()).slice(0, MAX_HTML));
-    return { text: out.text, publishedDate: out.publishedDate, blocked: false, ms: Date.now() - t0 };
-  } catch {
-    return { text: "", publishedDate: null, blocked: false, ms: Date.now() - t0 };
+    return { text: out.text, publishedDate: out.publishedDate, blocked: false, failure: null, ms: Date.now() - t0 };
+  } catch (err) {
+    return failed(err instanceof Error && err.name === "TimeoutError" ? `timed out after ${config.pageFetchTimeoutMs / 1000}s` : "could not connect");
   }
 }
 
 /** Does this page probably need a JavaScript render to show its real content? */
 export function needsRender(f: Fetched, query: string): boolean {
-  return f.blocked || looksUnrendered(f.text, query);
+  return f.blocked || f.text.length < 800 || (PRICE_Q.test(query) && !HAS_PRICE.test(f.text));
 }
 
-/** Render via Firecrawl (JS executed). Returns null if unavailable or failed. */
+/** Render via Firecrawl (JavaScript executed). Returns null if unavailable or failed. */
 export async function renderPage(url: string, signal?: AbortSignal): Promise<string | null> {
+  if (!config.firecrawlApiKey) return null;
   try {
-    return await firecrawlRender(url, signal);
+    // maxAge: accept Firecrawl's cached render up to 1 day old — much faster, prices rarely change hourly.
+    const json = await postJson(
+      "https://api.firecrawl.dev/v2/scrape", config.firecrawlApiKey,
+      { url, formats: ["markdown"], onlyMainContent: true, timeout: 12_000, maxAge: 86_400_000 },
+      14_000, signal,
+    );
+    const md: string = json?.data?.markdown ?? "";
+    // Light markdown cleanup: drop images and link targets, keep the text.
+    return md.replace(/!\[[^\]]*\]\([^)]*\)/g, "").replace(/\[([^\]]+)\]\([^)]*\)/g, "$1").trim() || null;
   } catch {
     return null;
   }

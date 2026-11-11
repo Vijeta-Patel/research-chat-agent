@@ -2,7 +2,10 @@
 
 import ReactMarkdown from "react-markdown";
 import remarkGfm from "remark-gfm";
+import { useMemo } from "react";
+import { findEvidence, linkCitations } from "@/lib/evidence";
 import type { MemoryRecord, Source } from "@/lib/types";
+import { citedIds } from "@/lib/util";
 
 // Plain coloured words, no pill backgrounds.
 const TIER_BADGE: Record<Source["tier"], { label: string; cls: string }> = {
@@ -22,10 +25,37 @@ export function TierBadge({ tier }: { tier: Source["tier"] }) {
 export const fmtDate = (iso: string | null) =>
   iso ? new Date(iso).toLocaleDateString(undefined, { day: "numeric", month: "short", year: "numeric" }) : "undated";
 
-// Turn "[S3]" / "[S3, S5]" / "[M2]" into links the renderer can style as superscript numbers.
-function linkCitations(text: string): string {
-  return text.replace(/\[((?:[SM]\d+)(?:\s*,\s*[SM]\d+)*)\]/g, (_m, ids: string) =>
-    ids.split(/\s*,\s*/).map((id) => `[${id}](#cite-${id})`).join(""),
+const READ_LABEL = { full: "page read in full", rendered: "page rendered + read", snippet: "search snippet only" } as const;
+
+// A web citation: the number opens the page at the passage that backs the
+// claim; hovering shows that passage as the agent read it, figures marked.
+function SourceCitation({ source: s, claim }: { source: Source; claim: string }) {
+  const ev = useMemo(() => findEvidence(claim, s.excerpt, s.url), [claim, s.excerpt, s.url]);
+  const parts: React.ReactNode[] = [];
+  let at = 0;
+  ev.marks.forEach(([from, to], i) => {
+    if (from < at) return;
+    parts.push(ev.passage.slice(at, from), <mark key={i} className="rounded-[3px] bg-orange/40 px-0.5 text-night-ink">{ev.passage.slice(from, to)}</mark>);
+    at = to;
+  });
+  parts.push(ev.passage.slice(at));
+  return (
+    <span className="group relative inline-block align-super">
+      <a href={ev.url} target="_blank" rel="noreferrer"
+        className="mx-0.5 font-mono text-[11px] font-medium text-accent-ink no-underline hover:underline">
+        {s.id.slice(1)}
+      </a>
+      <span className="pointer-events-none absolute left-1/2 top-full z-20 mt-1.5 hidden w-80 -translate-x-1/2 rounded-xl bg-night p-3 text-xs font-light leading-snug text-night-ink shadow-[0_8px_30px_rgba(0,0,0,0.25)] group-hover:block">
+        <span className="mb-1 flex items-center gap-2"><TierBadge tier={s.tier} /><span className="truncate font-mono text-[10px] text-night-muted">{s.domain} · {fmtDate(s.publishedDate)}{s.read ? ` · ${READ_LABEL[s.read]}` : ""}</span></span>
+        <span className="block font-medium">{s.title}</span>
+        <span className="mt-2 block font-mono text-[10px] text-night-muted">{ev.basis === "none" ? "what the agent read (no exact match for this sentence):" : "what the agent read:"}</span>
+        <span className="mt-0.5 line-clamp-6 block whitespace-pre-line border-l-2 border-night-line pl-2 text-night-ink/85">{at > 0 || ev.basis !== "none" ? "…" : ""}{parts}…</span>
+        {ev.missing.length > 0 && (
+          <span className="mt-1.5 block text-orange">not in this source&rsquo;s text: {ev.missing.join(", ")} — a calculation, or from another cited source</span>
+        )}
+        <span className="mt-2 block font-mono text-[10px] text-night-muted">click the number to open the page{ev.url !== s.url ? " at this passage" : ""}</span>
+      </span>
+    </span>
   );
 }
 
@@ -36,6 +66,7 @@ export function Answer(props: {
   onOpenConversation: (id: string) => void;
 }) {
   const { sources, memory } = props;
+  const { markdown, claims } = useMemo(() => linkCitations(props.text), [props.text]);
   return (
     <div className="prose-chat">
       <ReactMarkdown
@@ -43,24 +74,10 @@ export function Answer(props: {
         components={{
           a({ href, children }) {
             if (href?.startsWith("#cite-")) {
-              const id = href.slice(6);
+              const [, id, n] = href.match(/^#cite-([SM]\d+)-(\d+)$/) ?? [];
               const s = sources.get(id);
               const m = memory.get(id);
-              if (s) {
-                return (
-                  <span className="group relative inline-block align-super">
-                    <a href={s.url} target="_blank" rel="noreferrer"
-                      className="mx-0.5 font-mono text-[11px] font-medium text-accent-ink no-underline hover:underline">
-                      {id.slice(1)}
-                    </a>
-                    <span className="pointer-events-none absolute bottom-full left-1/2 z-20 mb-1.5 hidden w-80 -translate-x-1/2 rounded-xl bg-night p-3 text-xs font-light leading-snug text-night-ink shadow-[0_8px_30px_rgba(0,0,0,0.25)] group-hover:block">
-                      <span className="mb-1 flex items-center gap-2"><TierBadge tier={s.tier} /><span className="truncate font-mono text-[10px] text-night-muted">{s.domain} · {fmtDate(s.publishedDate)}{s.read ? ` · ${s.read === "snippet" ? "snippet only" : s.read === "rendered" ? "full page (rendered)" : "full page"}` : ""}</span></span>
-                      <span className="block font-medium">{s.title}</span>
-                      <span className="mt-1 line-clamp-4 block text-night-muted">{s.excerpt.slice(0, 280)}</span>
-                    </span>
-                  </span>
-                );
-              }
+              if (s) return <SourceCitation source={s} claim={claims[Number(n)] ?? ""} />;
               if (m) {
                 return (
                   <button type="button" onClick={() => m.conversationId && props.onOpenConversation(m.conversationId)}
@@ -76,16 +93,16 @@ export function Answer(props: {
           },
         }}
       >
-        {linkCitations(props.text)}
+        {markdown}
       </ReactMarkdown>
     </div>
   );
 }
 
 export function SourceList({ text, sources, extra }: { text: string; sources: Map<string, Source>; extra: Source[] }) {
-  const citedIds = [...new Set(text.match(/S\d+/g) ?? [])].filter((id) => sources.has(id));
-  const cited = citedIds.map((id) => sources.get(id)!).sort((a, b) => parseInt(a.id.slice(1)) - parseInt(b.id.slice(1)));
-  const others = extra.filter((s) => !citedIds.includes(s.id));
+  const ids = citedIds(text, "S").filter((id) => sources.has(id));
+  const cited = ids.map((id) => sources.get(id)!).sort((a, b) => parseInt(a.id.slice(1)) - parseInt(b.id.slice(1)));
+  const others = extra.filter((s) => !ids.includes(s.id));
   if (!cited.length && !others.length) return null;
   return (
     <div className="mt-4 border-t border-line pt-3">

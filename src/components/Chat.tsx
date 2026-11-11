@@ -2,10 +2,11 @@
 
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import type { AgentEvent, CheckResult, MemoryRecord, MemoryReport, Source, StoredMessage, TurnMeta } from "@/lib/types";
-import { Answer, SourceList, fmtDate } from "@/components/Answer";
+import { Answer, SourceList } from "@/components/Answer";
 import { Cat, CatAvatar, CatLoader, PawDots, type Answerer, type Phase } from "@/components/Cats";
-
-interface SearchStep { query: string; status: "running" | "done" | "error"; count: number; error?: string }
+import { MemoryPanel, type ConvSummary } from "@/components/MemoryPanel";
+import { SearchLog, pageOf, searchesFromSources, type SearchStep } from "@/components/SearchLog";
+import { citedIds } from "@/lib/util";
 interface UiMessage {
   id: string;
   role: "user" | "assistant";
@@ -21,7 +22,6 @@ interface UiMessage {
   ms?: number;
   turn?: TurnMeta;
 }
-interface ConvSummary { id: string; title: string; updatedAt: string }
 
 const EXAMPLES = [
   "Compare HubSpot, Pipedrive and Salesforce pricing for a 20-person sales team",
@@ -31,7 +31,7 @@ const EXAMPLES = [
 ];
 
 const fromStored = (m: StoredMessage): UiMessage => ({
-  id: m.id, role: m.role, text: m.text, sources: m.sources, memory: m.memory, searches: [], checks: m.checks,
+  id: m.id, role: m.role, text: m.text, sources: m.sources, memory: m.memory, searches: searchesFromSources(m.sources), checks: m.checks,
   turn: m.turn, ms: m.turn?.totalMs,
 });
 
@@ -79,6 +79,9 @@ export default function Chat() {
 
   const patchLast = (fn: (m: UiMessage) => UiMessage) =>
     setMessages((ms) => ms.map((m, i) => (i === ms.length - 1 ? fn(m) : m)));
+
+  const patchSearch = (id: string, fn: (s: SearchStep) => SearchStep) =>
+    patchLast((m) => ({ ...m, searches: m.searches.map((s) => (s.id === id ? fn(s) : s)) }));
 
   async function send(text: string) {
     const message = text.trim();
@@ -137,15 +140,18 @@ export default function Chat() {
       case "conversation": setConvId(e.id); break;
       case "memory": patchLast((m) => ({ ...m, memoryReport: e.report, memory: e.report.records })); break;
       case "search_start":
-        patchLast((m) => ({ ...m, searches: [...m.searches, { query: e.query, status: "running", count: 0 }] })); break;
+        patchLast((m) => ({ ...m, searches: [...m.searches, { id: e.searchId, query: e.query, options: e.options, status: "running", pages: [] }] })); break;
+      case "search_pages":
+        patchSearch(e.searchId, (s) => ({ ...s, provider: e.provider, pages: e.pages })); break;
+      case "search_page":
+        patchSearch(e.searchId, (s) => ({ ...s, pages: s.pages.map((p) => (p.url === e.page.url ? e.page : p)) })); break;
       case "search_done":
+        // The sources are the final word on each page (and what gets stored).
+        patchSearch(e.searchId, (s) => ({ ...s, status: e.error ? "error" : "done", error: e.error, pages: e.error ? s.pages : e.sources.map(pageOf) }));
         patchLast((m) => {
-          const i = m.searches.findIndex((s) => s.query === e.query && s.status === "running");
-          const searches = [...m.searches];
-          if (i >= 0) searches[i] = { query: e.query, status: e.error ? "error" : "done", count: e.sources.length, error: e.error };
           const byId = new Map(m.sources.map((s) => [s.id, s]));
           for (const s of e.sources) byId.set(s.id, s);
-          return { ...m, searches, sources: [...byId.values()] };
+          return { ...m, sources: [...byId.values()] };
         });
         break;
       case "text": patchLast((m) => ({ ...m, text: m.text + e.delta })); break;
@@ -165,7 +171,7 @@ export default function Chat() {
           {messages.length > 0 && (
             <button onClick={newChat} disabled={busy} className="h-11 rounded-[10px] px-3 text-sm text-muted hover:text-ink disabled:opacity-40">new chat</button>
           )}
-          <button onClick={() => setShowMemory((v) => !v)} aria-label="Past chats" aria-expanded={showMemory}
+          <button onClick={() => setShowMemory((v) => !v)} aria-label="Memory" aria-expanded={showMemory}
             className="flex h-11 w-11 items-center justify-center rounded-[10px] hover:bg-warm">
             <Cat sprite="cali" scale={2} />
           </button>
@@ -205,7 +211,7 @@ export default function Chat() {
             ) : (
               <div key={m.id + i} className="mt-5">
                 {m.pending && !m.text ? (
-                  <div className="pl-16"><CatLoader {...loading(m)} /></div>
+                  <div className="pl-16"><CatLoader {...loading(m)} /><MemoryLine report={m.memoryReport} /><SearchLog searches={m.searches} live /></div>
                 ) : (
                   <div className="flex items-start gap-5">
                     <div className="shrink-0 pt-1"><CatAvatar who={answerer(m)} /></div>
@@ -215,9 +221,11 @@ export default function Chat() {
                       )}
                       {m.pending && m.text && <PawDots />}
                       {!m.pending && m.text && <SourceList text={m.text} sources={sourceMap} extra={m.sources} />}
+                      <MemoryLine report={m.memoryReport} />
+                      <SearchLog searches={m.searches} live={false} />
                       {!m.pending && m.checks && <Checks c={m.checks} />}
                       {m.notice && <div className="mt-2 font-mono text-[10px] text-faint">{m.notice}</div>}
-                      {!m.pending && m.turn && <HowIGotThis turn={m.turn} memory={m.memory} sources={m.sources} />}
+                      {!m.pending && m.turn && <HowIGotThis turn={m.turn} memory={m.memory} />}
                     </div>
                   </div>
                 )}
@@ -261,7 +269,7 @@ export default function Chat() {
 // Which cat signs the answer: web search → Tux, memory → Cali, both → both.
 function answerer(m: UiMessage): Answerer {
   const memoryIds = new Set(m.memory.map((r) => r.id));
-  const citedMemory = (m.text.match(/\bM\d+\b/g) ?? []).some((id) => memoryIds.has(id));
+  const citedMemory = citedIds(m.text, "M").some((id) => memoryIds.has(id));
   const usedWeb = m.sources.length > 0 || m.searches.length > 0;
   if (citedMemory && usedWeb) return "both";
   if (citedMemory) return "cali";
@@ -274,41 +282,19 @@ function loading(m: UiMessage): { phase: Phase; label: string } {
   const running = m.searches.filter((s) => s.status === "running");
   if (running.length) return { phase: "searching", label: `tux is searching · ${running[running.length - 1].query}` };
   if (m.searches.length) {
-    const n = m.searches.reduce((a, s) => a + s.count, 0);
+    const n = m.searches.reduce((a, s) => a + s.pages.length, 0);
     return { phase: "reading", label: `tux is reading ${n} page${n === 1 ? "" : "s"}` };
   }
   return { phase: "writing", label: "thinking…" };
 }
 
-function MemoryPanel(props: {
-  conversations: ConvSummary[];
-  currentId?: string;
-  onOpen: (id: string) => void;
-  onRemove: (id: string) => void;
-  onClose: () => void;
-}) {
+// Memory is looked through before every answer; this line says what came back.
+function MemoryLine({ report }: { report?: MemoryReport }) {
+  if (!report || !report.totalConversations) return null;
+  const n = report.totalConversations;
   return (
-    <div className="fixed inset-0 z-30 flex justify-end" onKeyDown={(e) => { if (e.key === "Escape") props.onClose(); }}>
-      <button aria-label="Close past chats" onClick={props.onClose} className="absolute inset-0 bg-black/10" />
-      <aside aria-label="Past chats" className="relative flex h-full w-80 max-w-[90vw] flex-col bg-card shadow-[0_0_40px_rgba(0,0,0,0.12)]">
-        <div className="flex items-end justify-between px-5 pb-3 pt-5">
-          <div className="display text-lg">past chats</div>
-          <Cat sprite="cali-nap" scale={3} />
-        </div>
-        <nav className="flex-1 overflow-y-auto px-2 pb-4">
-          {props.conversations.length === 0 && <p className="px-3 text-sm text-muted">nothing yet.</p>}
-          {props.conversations.map((c) => (
-            <div key={c.id} className={`group flex items-center rounded-[10px] ${c.id === props.currentId ? "bg-warm" : "hover:bg-paper"}`}>
-              <button onClick={() => props.onOpen(c.id)} className="min-w-0 flex-1 px-3 py-2 text-left">
-                <div className="truncate text-sm">{c.title}</div>
-                <div className="font-mono text-[10px] text-faint">{fmtDate(c.updatedAt)}</div>
-              </button>
-              <button onClick={() => props.onRemove(c.id)} aria-label={`Forget "${c.title}"`} title="Forget this conversation"
-                className="mr-1 h-9 w-9 rounded-[8px] text-faint opacity-0 hover:text-orange focus:opacity-100 group-hover:opacity-100">×</button>
-            </div>
-          ))}
-        </nav>
-      </aside>
+    <div className="mt-3 font-mono text-[11px] text-faint">
+      ◆ memory checked first · {n} earlier chat{n === 1 ? "" : "s"} · {report.note || "nothing relevant"}
     </div>
   );
 }
@@ -330,10 +316,8 @@ function Checks({ c }: { c: CheckResult }) {
 
 // "How I got this": the turn ledger for one answer — what the harness did, in
 // order, with timings. Makes the architecture visible while you chat.
-function HowIGotThis({ turn, memory, sources }: { turn: TurnMeta; memory: MemoryRecord[]; sources: Source[] }) {
+function HowIGotThis({ turn, memory }: { turn: TurnMeta; memory: MemoryRecord[] }) {
   const sec = (ms: number) => `${(ms / 1000).toFixed(1)}s`;
-  const read = { full: 0, rendered: 0, snippet: 0 };
-  for (const s of sources) if (s.read) read[s.read]++;
   const kinds = memory.reduce<Record<string, number>>((a, r) => ({ ...a, [r.kind]: (a[r.kind] ?? 0) + 1 }), {});
   const icon: Record<string, string> = { memory: "◆", model: "●", search: "⌕", guard: "▲", repair: "↺" };
   return (
@@ -345,9 +329,6 @@ function HowIGotThis({ turn, memory, sources }: { turn: TurnMeta; memory: Memory
         <div><span className="text-ink">{turn.model}</span> via {turn.provider}{turn.revised ? " · answer revised after checks" : ""}</div>
         {memory.length > 0 && (
           <div>memory used: {Object.entries(kinds).map(([k, n]) => `${n} ${k}`).join(" · ")}</div>
-        )}
-        {sources.length > 0 && (
-          <div>pages: {read.full} read in full · {read.rendered} rendered · {read.snippet} snippet only</div>
         )}
         <ol className="space-y-0.5">
           {turn.trace.map((t, i) => (

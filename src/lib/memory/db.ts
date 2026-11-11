@@ -62,7 +62,9 @@ export function getDb(): DatabaseSync {
       entities_json TEXT NOT NULL DEFAULT '[]',
       message_count INTEGER NOT NULL DEFAULT 0,
       updated_at TEXT NOT NULL,
-      embedding_json TEXT
+      aliases_json TEXT NOT NULL DEFAULT '[]',   -- other words the user might use for this chat later
+      decisions_json TEXT NOT NULL DEFAULT '[]', -- what the user decided
+      open_json TEXT NOT NULL DEFAULT '[]'       -- what was left unresolved
     );
     CREATE VIRTUAL TABLE IF NOT EXISTS conversation_memory_fts USING fts5(
       conversation_id UNINDEXED, text, tokenize = 'porter unicode61'
@@ -96,6 +98,11 @@ export function getDb(): DatabaseSync {
       conversation_id TEXT NOT NULL
     );
   `);
+  // Databases created before a column existed get it added (additive only).
+  const columns = new Set(db.prepare("PRAGMA table_info(conversation_memory)").all().map((r) => r.name as string));
+  for (const c of ["aliases_json", "decisions_json", "open_json"]) {
+    if (!columns.has(c)) db.exec(`ALTER TABLE conversation_memory ADD COLUMN ${c} TEXT NOT NULL DEFAULT '[]'`);
+  }
   return db;
 }
 
@@ -250,9 +257,11 @@ export interface ConversationMemory {
   summary: string;
   topics: string[];
   entities: string[];
+  aliases: string[];
+  decisions: string[];
+  open: string[];
   messageCount: number;
   updatedAt: string;
-  embedding: number[] | null;
 }
 
 function toConvMemory(r: Row): ConversationMemory {
@@ -263,9 +272,11 @@ function toConvMemory(r: Row): ConversationMemory {
     summary: r.summary as string,
     topics: JSON.parse((r.topics_json as string) || "[]"),
     entities: JSON.parse((r.entities_json as string) || "[]"),
+    aliases: JSON.parse((r.aliases_json as string) || "[]"),
+    decisions: JSON.parse((r.decisions_json as string) || "[]"),
+    open: JSON.parse((r.open_json as string) || "[]"),
     messageCount: Number(r.message_count),
     updatedAt: r.updated_at as string,
-    embedding: r.embedding_json ? JSON.parse(r.embedding_json as string) : null,
   };
 }
 
@@ -276,22 +287,37 @@ export function getConversationMemory(conversationId: string): ConversationMemor
   return r ? toConvMemory(r as Row) : null;
 }
 
-export function allConversationMemories(excludeConversation?: string, limit = 200): ConversationMemory[] {
+/**
+ * The timeline: the most recent conversations, newest first, each with its
+ * distilled memory if it has one yet. A conversation whose distillation is
+ * still running (or failed) is still listed — the raw log is the truth, the
+ * distilled memory is derived from it.
+ */
+export function recentConversations(excludeConversation?: string, limit = 30): (ConversationMemory & { firstMessage: string })[] {
   return getDb()
-    .prepare(`${CM_SELECT} WHERE cm.conversation_id != ? ORDER BY cm.updated_at DESC LIMIT ?`)
+    .prepare(`SELECT c.id AS conversation_id, c.title, c.created_at, c.updated_at AS conv_updated_at, cm.summary, cm.topics_json,
+                cm.entities_json, cm.aliases_json, cm.decisions_json, cm.open_json, cm.message_count, cm.updated_at,
+                (SELECT text FROM messages m WHERE m.conversation_id = c.id AND m.role = 'user' ORDER BY m.created_at ASC LIMIT 1) AS first_message
+              FROM conversations c LEFT JOIN conversation_memory cm ON cm.conversation_id = c.id
+              WHERE c.id != ? ORDER BY c.updated_at DESC LIMIT ?`)
     .all(excludeConversation ?? "", limit)
-    .map((r) => toConvMemory(r as Row));
+    .map((r) => ({
+      ...toConvMemory({ ...r, summary: r.summary ?? "", message_count: r.message_count ?? 0, updated_at: r.updated_at ?? r.conv_updated_at } as Row),
+      firstMessage: (r.first_message as string) ?? "",
+    }));
 }
 
 export function saveConversationMemory(m: Omit<ConversationMemory, "title" | "createdAt">): void {
   const d = getDb();
-  d.prepare(`INSERT OR REPLACE INTO conversation_memory (conversation_id, summary, topics_json, entities_json, message_count, updated_at, embedding_json)
-             VALUES (?, ?, ?, ?, ?, ?, ?)`)
-    .run(m.conversationId, m.summary, JSON.stringify(m.topics), JSON.stringify(m.entities), m.messageCount, m.updatedAt,
-      m.embedding ? JSON.stringify(m.embedding) : null);
+  d.prepare(`INSERT OR REPLACE INTO conversation_memory
+             (conversation_id, summary, topics_json, entities_json, aliases_json, decisions_json, open_json, message_count, updated_at)
+             VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`)
+    .run(m.conversationId, m.summary, JSON.stringify(m.topics), JSON.stringify(m.entities), JSON.stringify(m.aliases),
+      JSON.stringify(m.decisions), JSON.stringify(m.open), m.messageCount, m.updatedAt);
+  // Everything a later question might match on, in one searchable document.
   d.prepare("DELETE FROM conversation_memory_fts WHERE conversation_id = ?").run(m.conversationId);
   d.prepare("INSERT INTO conversation_memory_fts (conversation_id, text) VALUES (?, ?)")
-    .run(m.conversationId, `${m.summary}\n${m.topics.join(", ")}\n${m.entities.join(", ")}`);
+    .run(m.conversationId, [m.summary, m.topics.join(", "), m.entities.join(", "), m.aliases.join(", "), m.decisions.join(". "), m.open.join(". ")].join("\n"));
 }
 
 export function searchConversationMemory(ftsQuery: string, excludeConversation?: string, limit = 8): string[] {
@@ -387,6 +413,25 @@ export function searchClaimHistory(ftsQuery: string, limit = 12): Claim[] {
   }
 }
 
+/** The whole ledger, grouped by fact, newest fact first — for the "what I remember" panel. */
+export function listFacts(limit = 200): Claim[] {
+  return getDb().prepare("SELECT * FROM claims ORDER BY observed_at DESC LIMIT ?").all(limit).map((r) => toClaim(r as Row));
+}
+
+/** Forget a fact: every recorded version of this entity + attribute. */
+export function deleteFact(entity: string, attribute: string): void {
+  const d = getDb();
+  const ids = d.prepare("SELECT id FROM claims WHERE entity_key = ? AND attribute_key = ?").all(claimKey(entity), claimKey(attribute)).map((r) => r.id as string);
+  for (const id of ids) {
+    d.prepare("DELETE FROM claims_fts WHERE claim_id = ?").run(id);
+    d.prepare("DELETE FROM claims WHERE id = ?").run(id);
+  }
+}
+
+export function deleteProfileFact(key: string): void {
+  getDb().prepare("DELETE FROM profile WHERE key = ?").run(claimKey(key));
+}
+
 export interface ProfileFact { key: string; value: string; updatedAt: string; conversationId: string }
 
 export function getProfile(): ProfileFact[] {
@@ -467,19 +512,6 @@ export function withNeighbours(hits: MessageHit[], before = 2, after = 1): Messa
     for (const m of [...prev, h, ...next]) if (!seen.has(m.id)) { seen.add(m.id); out.push(m); }
   }
   return out;
-}
-
-export function recentConversationMessages(limitConversations: number, excludeConversation?: string): MessageHit[] {
-  const convs = getDb()
-    .prepare("SELECT id FROM conversations WHERE id != ? ORDER BY updated_at DESC LIMIT ?")
-    .all(excludeConversation ?? "", limitConversations)
-    .map((r) => r.id as string);
-  if (!convs.length) return [];
-  return getDb()
-    .prepare(`${HIT_SELECT} WHERE m.conversation_id IN (${convs.map(() => "?").join(",")})
-              ORDER BY m.created_at ASC`)
-    .all(...convs)
-    .map(toHit);
 }
 
 export function historyStats(excludeConversation?: string): { count: number; first: string | null; last: string | null } {

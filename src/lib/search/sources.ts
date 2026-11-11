@@ -1,4 +1,5 @@
 import type { SourceTier } from "@/lib/types";
+import { domainOf } from "@/lib/util";
 
 // Source reliability, decided in code so it is consistent run-to-run.
 // The model sees the tier next to each result and the system prompt tells it
@@ -19,14 +20,6 @@ const COMMUNITY = new Set([
 ]);
 
 const PRIMARY_SUFFIXES = [".gov", ".gov.uk", ".gov.in", ".europa.eu", ".edu", ".int"];
-
-export function domainOf(url: string): string {
-  try {
-    return new URL(url).hostname.replace(/^www\./, "").toLowerCase();
-  } catch {
-    return url;
-  }
-}
 
 function matchesSet(domain: string, set: Set<string>): boolean {
   for (const d of set) if (domain === d || domain.endsWith("." + d)) return true;
@@ -51,7 +44,7 @@ export function classifySource(opts: {
   const domain = domainOf(opts.url);
 
   // The model explicitly targeted this domain (e.g. the vendor's site) → official.
-  if (opts.includeDomains?.some((d) => domain === d || domain.endsWith("." + d.replace(/^www\./, "")))) {
+  if (opts.includeDomains?.some((d) => domain === d || domain.endsWith("." + d))) {
     return "official";
   }
   if (PRIMARY_SUFFIXES.some((s) => domain.endsWith(s))) return "primary";

@@ -8,8 +8,8 @@
 //   user pastes a key/password into chat    maskSecrets()          (#5)
 //   model writes a URL we never retrieved   stripUnknownUrls()     (#7)
 //   someone hammers the endpoint/the keys   rateLimit()            (#4)
-// (#3 safety blocks, #4 turn budgets and #6 freshness live in run.ts;
-//  #8 high-stakes topics is a prompt policy.)
+// (#3 model refusals: llm/claude.ts · #4 turn budgets: search/tool.ts ·
+//  #6 freshness: agent/verify.ts · #8 high-stakes topics: a prompt policy.)
 
 type Kind = "email" | "phone" | "card" | "api key" | "password" | "private key" | "id number";
 
@@ -128,22 +128,4 @@ export function rateLimit(key: string, limit: number, windowMs: number): { ok: b
   recent.push(nowMs);
   hitsByKey.set(key, recent);
   return { ok: true, retryAfterS: 0 };
-}
-
-/** #3 — Human explanation when Gemini's safety system blocks or cuts off a response. */
-export function blockedExplanation(reason: string | undefined): string | null {
-  switch (reason) {
-    case "SAFETY":
-    case "PROHIBITED_CONTENT":
-    case "BLOCKLIST":
-    case "JAILBREAK":
-    case "MODEL_ARMOR":
-      return "I can't help with that request — the model provider's safety system blocked it. If this seems wrong, try rephrasing what you need.";
-    case "SPII":
-      return "The response was blocked because it would have included sensitive personal information.";
-    case "RECITATION":
-      return "The response was stopped because it was reproducing copyrighted text too closely. Ask for a summary instead.";
-    default:
-      return null;
-  }
 }

@@ -48,16 +48,16 @@ Every significant design decision, in the order it was made: the problem, the op
 
 **D8. First build on Gemini (free tier).** No Anthropic API key was available.
 - *Measured problems:* repeated 503 "high demand" errors. An overloaded model took **10.8 s just to fail**. The SDK's built-in retry (5 attempts, exponential backoff) made one answer take **167 s**. Then the daily quota ran out.
-- *Fixes kept in the Gemini path:* SDK retries off; our own fallback chain (3.6 Flash → 3.5 Flash-Lite → 3.8 Flash); a per-model circuit breaker (429 → 60 s cool-down, 503 → 5 min); a 15 s connection deadline.
+- *Fixes made at the time (removed with the Gemini path, D43):* SDK retries off; our own fallback chain (3.6 Flash → 3.5 Flash-Lite → 3.8 Flash); a per-model circuit breaker (429 → 60 s cool-down, 503 → 5 min); a 15 s connection deadline.
 
 **D9. Default provider: Claude Sonnet 5.5 via the Claude Agent SDK.** It runs with `ANTHROPIC_API_KEY`, or with a local Claude Code login for development.
 - **Configured down to the brief:** `tools: []` (every built-in tool off: no shell, no files, no built-in web); our `web_search` is the only tool (an in-process MCP tool whose handler is our guarded search); `settingSources: []`; `persistSession: false` (our SQLite store is the only memory); `cwd` set to a temp directory.
-- *Rejected:* the SDK's built-in WebSearch/WebFetch. Two tools instead of one; no date filters, source tiers or guardrails; our citation checker couldn't see the page text; the Gemini path would lose search.
+- *Rejected:* the SDK's built-in WebSearch/WebFetch. Two tools instead of one; no date filters, source tiers or guardrails; our citation checker couldn't see the page text.
 - *Measured:* effort `low` vs `medium` made no measurable latency difference (16.0 s vs 15.2 s on the same question), so `medium` stayed.
 
-**D10. Gemini stays available** (`LLM_PROVIDER=gemini`). The same harness and the same tool run on both. The test suite passes on both (§11).
+**D10. Gemini stayed available for a while** (`LLM_PROVIDER=gemini`), with the same harness and tool on both. *Superseded by D43.*
 
-**D11. A cheap model for memory distillation** (Claude Haiku 5.5 / Gemini Flash-Lite). It runs once per turn, in the background, so cost and latency don't touch the answer.
+**D11. A cheap model for memory distillation** (Claude Haiku 5.5). It runs once per turn, in the background, so cost and latency don't touch the answer.
 
 ---
 
@@ -120,7 +120,7 @@ Nobody builds web search fully from scratch without an index. Crawling the web i
 
 **D20. Write path = background distillation.** After each answer, one cheap model call returns JSON; the code validates it (claims must cite a source the answer actually used; secrets are never stored). Existing fact names are passed in, so a restated fact becomes a new version of the same fact (*measured bug:* it had been stored under two different names, so there was no history). Facts are stamped with the time of the answer, not the time of distillation.
 
-**D21. Read path = hybrid recall** over four retrievers, merged by reciprocal rank fusion, filling a **fixed budget** (~3.5k tokens) most reliable first: profile → (long chats) earlier-in-this-chat summary → exact date hits → facts with value history → summaries → raw excerpts. The prompt stays the same size at 10 conversations or 10,000.
+**D21. Read path = hybrid recall** (extended by D48) over four retrievers, merged by reciprocal rank fusion, filling a **fixed budget** (~3.5k tokens) most reliable first: profile → (long chats) earlier-in-this-chat summary → exact date hits → facts with value history → summaries → raw excerpts. The prompt stays the same size at 10 conversations or 10,000.
 
 **D22. Dates only trigger a memory lookup when the message is about *our* past** ("I asked…", "you told me…"). "News from last month" is a search filter, not memory. Decision verbs (pick, choose, compare) only count in the past tense: *measured bug*, "which CRM should we **pick**?" had been treated as a question about the past.
 
@@ -132,7 +132,7 @@ Nobody builds web search fully from scratch without an index. Crawling the web i
 |---|---|---|
 | Local all-MiniLM-L6-v2 | postgres 0.22 · **crm 0.24** · f1 0.10 → wrong | Rejected |
 | Local bge-small-en-v1.5 | postgres 0.55 · crm 0.56 · **f1 0.62** → wrong | Rejected |
-| Hosted gemini-embedding-001 | **postgres 0.66** · crm 0.65 → right by a hair | Optional, half weight in fusion |
+| Hosted gemini-embedding-001 | **postgres 0.66** · crm 0.65 → right by a hair | Was optional at half weight; removed with Gemini (D43) |
 
 Fuzzy recall mainly comes from **distilled general topics** ("managed databases") + stemmed full-text search: exact, instant, no extra key. *Rejected:* local embeddings (wrong answers + 25–130 MB download + 5–6 s cold start); a vector database (overkill at this scale).
 
@@ -140,7 +140,28 @@ Fuzzy recall mainly comes from **distilled general topics** ("managed databases"
 
 **D26. Profile keys are specific and merge.** *Measured:* a generic key (`current product`) was overwritten by the next product mentioned, losing the duration. Keys are now specific (`moisturizer`, `serum`, `cleanser`), and new detail is merged into the existing value.
 
-**D27. Old answers aren't evidence for current facts.** For questions not about the past, only the user's own earlier messages are recalled (their needs), never old answers. *Measured:* the model had cited its own earlier answer as the source for a current price.
+**D27. Old answers aren't evidence for current facts.** For questions not about the past, raw recall is limited to the user's own earlier messages (their needs), never old answers verbatim. (Since D48, dated summaries and recorded facts are always available; the prompt rule and the freshness check stop them being presented as current.) *Measured:* the model had cited its own earlier answer as the source for a current price.
+
+**D47. Memory first, enforced in code.** A question about our past must not be answered before memory has been looked through.
+- *Structure:* recall runs before the model on every message; the model has no way to answer ahead of it. The UI prints "memory checked first · N earlier chats · recalled …" above the search log.
+- *Check:* when the message is about our past and the draft cites no memory record and doesn't say there is none, one repair pass re-sends the memory block and requires `[M#]` citations or a plain "no record".
+- *Rejected:* a `recall_memory` tool the model may or may not call (breaks the one-tool brief, and "may not call" is exactly the failure this rule exists to prevent).
+
+**D48. Recall no longer depends on the user saying the right words.** *Measured before:* 16 probe questions against 5 seeded chats: 11 found the right conversation, 6 of those only as the user's old message with no recorded facts, and "that database thing", "Is it still $25?", "my last three conversations" and "that moisturiser" found nothing. Cause: summaries and facts were only retrieved when a regex saw phrases like "I asked".
+- *Always in view:* the profile plus a timeline of the 6 most recent conversations (summary, decided, left open), relevant or not. The answering model does the fuzzy matching itself, at no extra call. A chat that hasn't been distilled yet still appears, from its raw first message.
+- *All retrievers run on every message:* dates, keywords, topics, and a new one over the facts ledger that also matches money amounts ("$25").
+- *Aliases at write time:* the distiller adds 4–10 other words a person might use later (synonyms, broader categories, British/American spellings). They go into the full-text index. This is document-side expansion: the semantic work is paid once, in the background, instead of an embedding or model call on every question.
+- *Precision:* only conversations scoring ≥ 60% of the best fused score are selected (max 3); a date plus a topic keeps only that day's chats about the topic (*measured:* one busy day put 12 unrelated chats in the block).
+- *"Last Tuesday" on a Wednesday* can mean yesterday or eight days ago. Both are searched and the block says so.
+- *Rejected:* a small-model "router" call before every answer (adds a model round-trip to every message; the timeline + aliases reached 20/20 without it); bringing embeddings back (D24, D43).
+- *Result:* `npm run eval:memory` — 17 chats distilled by the real write path, targets pushed outside the timeline, 20 questions: **20/20**, ~9 ms per recall. Report: `eval/memory.md`.
+- *Limit, stated plainly:* 20 hand-written questions over 17 chats is a regression test, not a benchmark; the timeline costs ~1k tokens on every message.
+
+**D49. Decisions and open items are memory too.** The distiller keeps two short lists per conversation, updated each turn: what the user decided, and what is still unresolved. Recall shows them with the conversation; the prompt tells the model to pick an open thread up when the user returns to that topic, and not otherwise.
+- *Measured in the running app:* after "we'll decide between HubSpot and Pipedrive after Friday's demo", a new chat asking "which one did we go with for the sales software?" answered "You haven't picked one yet", cited both records, and listed what was still open. No search, 10 s.
+- *Bug found by that test:* the recall question itself was distilled and copied the CRM chat's open items into a second conversation. *Fix:* a turn that only looked back (about our past, no search) is remembered as having happened but adds no decisions, open items or facts.
+
+**D50. Memory you can read and delete.** The drawer lists the profile, open items, decisions and every tracked fact with its value history; each can be forgotten (`/api/memory`). Everything is one local SQLite file.
 
 **D28. "Forget this conversation" removes everything derived from it:** transcript, index, summary, facts, the profile facts it contributed, and its turn ledger rows.
 
@@ -201,6 +222,22 @@ All in code (`src/lib/agent/guardrails.ts`) unless marked *prompt*.
 
 **D35. A turn ledger** (`turns` table): every answer's provider, model, timezone, total and first-word time, searches, revision flag, notices and full step trace, including the background distillation outcome. It used to be printed to the console and lost.
 
+**D43. One model layer: Gemini removed.** Anyone running the project needs only `ANTHROPIC_API_KEY` (or a local Claude Code login).
+- *Why:* a second provider meant a `Provider` interface with two implementations, two fallback strategies, provider-specific safety handling and doubled eval runs — for a path nobody would grade. The interface is gone; `llm/claude.ts` exports `generate` and `complete`.
+- *Cost, stated plainly:* the optional vector retriever used Gemini embeddings, so it went too. Recall is now three retrievers (dates, keywords, distilled topics). Vague-wording recall is the next piece of work.
+
+**D44. Shared helpers instead of copies** (`lib/util.ts`). Before: URL normalising in three places, two stop-word lists and tokenisers, three hand-rolled timeout signals, the cited-ID regex in four files, source tiers computed twice per result, tool-argument validation split across two files.
+- *A real bug this removed:* search hits were de-duplicated by a normalised URL but numbered `[S#]` by the raw URL, so one page could get two IDs. Both now use one `pageKey()`.
+- *A second one:* the old key dropped the whole query string, so `item?id=1` and `item?id=2` counted as one page. `pageKey()` drops only tracking/locale parameters.
+- `run.ts` went from 379 lines to a ~150-line spine; the search tool lives in `search/tool.ts`, the post-answer checks in `agent/verify.ts`.
+
+**D45. Search you can watch.** The pipeline reports each step: the URLs discovery returned, then per page `fetching → read in full | rendering → rendered | snippet only`, with the time taken and the reason ("HTTP 403", "timed out", "almost no readable text (JavaScript page)", "not opened — only the top 5 are read"). The same log stays under the answer, rebuilt from the stored sources.
+- *Rejected:* a generic "searching…" spinner (the old UI) — it hides exactly the part a reviewer wants to judge.
+
+**D46. Citations you can verify in one click.** For each citation the UI takes the text it vouches for, finds that figure (or, with no figure, the best-matching line) in the text the agent read, and shows the passage with the figure highlighted. The citation links to the page with a text fragment (`#:~:text=…`) so the browser scrolls to the passage.
+- Figures that are not in the cited text are named in the popup — the same rule the citation checker enforces, made visible.
+- *Limit, stated plainly:* text-fragment links depend on the browser and on the page still containing those words; when they don't match, the page simply opens at the top.
+
 **D36. "How I got this"** under each answer renders that ledger, so a reviewer sees the architecture working while they chat: memory used, pages read in full vs. rendered vs. snippet, each step with its timing, guardrail hits and repairs.
 
 ---
@@ -235,7 +272,7 @@ All in code (`src/lib/agent/guardrails.ts`) unless marked *prompt*.
 
 **D41. Honest results.**
 - Claude: the first 10 of 14 passed before the subscription usage limit cut the run.
-- The blocked cases + vague recall then passed **5/5 on Gemini** through the same harness.
+- The blocked cases + vague recall then passed **5/5 on Gemini** through the same harness (before Gemini was removed, D43).
 - Earlier full runs: 12/12 and 10/10.
 - The first-ever run scored 6/10 because the script didn't load `.env.local` and every search returned 401. Even then, the agent said search was unavailable instead of guessing.
 
@@ -266,6 +303,11 @@ Each was found from evidence (traces, the checker, stored data), not guessed.
 | "From 2 years" parsed as "2 o'clock today" → 21 noisy memory records | date parser on the exact message | memory dates must name a day (21 → 9 records) |
 | Generic words ("use") matched unrelated chats | keyword list | verb/filler stop-words (5 → 3 relevant records) |
 | Eval script failed every search with 401 | eval log | load `.env.local` outside Next.js |
+| Recall questions without a past-tense cue found no summaries or facts | 16-question probe: 11/16, 6 without facts | all retrievers always on; timeline; aliases (D48) |
+| One busy day put 12 unrelated chats in the memory block | `eval:memory` output for "last Tuesday…" | date hits limited to the topic named |
+| "moisturiser" missed a chat stored as "moisturizer" (19/20) | `eval:memory`: stored aliases vs the question | British ↔ American spelling variants in the search query (20/20) |
+| A recall question duplicated another chat's open items | memory drawer after a live test | recall-only turns add no decisions, open items or facts |
+| "$25 + $30 − $10 = $45" flagged as an unsupported figure | failing eval case, reproduced offline | checker accepts three-term working |
 
 ---
 
@@ -278,5 +320,7 @@ Each was found from evidence (traces, the checker, stored data), not guessed.
 | v3 | **Own pipeline:** discover → fetch → read → rank; Firecrawl failover and rendering | (unchanged) | **Claude via Agent SDK**, built-in tools off |
 | v4 | (unchanged) | **Four memory types**, background distillation, hybrid recall with rank fusion, turn ledger | + Haiku for distillation |
 | v4.1 | (unchanged) | Neighbour context, specific profile keys, stricter date parsing (from real use) | (unchanged) |
+| v5 | Per-URL live progress; citations open the page at the cited passage | Vector retriever removed with Gemini | **Claude only**; provider interface removed; shared helpers |
+| v6 | (unchanged) | **Memory first** (enforced); always-in-view timeline; aliases at write time; facts retriever; decisions + open items; inspectable, forgettable memory; `eval:memory` 20/20 | (unchanged) |
 
 Next steps are in `DESIGN.md` → "With another week".

@@ -1,14 +1,10 @@
+import { tokenize } from "@/lib/util";
+
 // Stage 4 of web_search: RANK — ours.
 // A full page is too long to hand the model, and a provider snippet often misses
 // the part that matters (the pricing table). Split the page into passages, score
 // them against the query with BM25, boost passages that contain figures when the
 // question is about prices/numbers, and keep the best few in page order.
-
-const STOP = new Set(
-  "a an the and or of to in on at by for with from is are was were be been it its this that these those what which who how when where why do does did has have had can will would should vs versus".split(" "),
-);
-const tokenize = (s: string) =>
-  (s.toLowerCase().match(/[a-z0-9][a-z0-9.+#-]*/g) ?? []).map((w) => w.replace(/[.-]+$/, "")).filter((w) => w.length > 1 && !STOP.has(w));
 
 const NUMERIC_Q = /\b(price|pricing|cost|costs|plan|plans|how much|fee|fees|rate|rates|per (seat|user|month)|limit|limits|percent|%|\d)\b/i;
 const HAS_FIGURE = /[$€£₹]\s?\d|\d+(\.\d+)?\s?(%|\/mo|per|usd|eur|gb|tb)/i;

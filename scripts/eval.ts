@@ -202,10 +202,8 @@ async function main() {
 
   // Distil the seeded conversation like a real turn would (summary, topics, claims).
   const { distillTurn, waitForDistillation } = await import("@/lib/memory/distill");
-  const { claudeProvider } = await import("@/lib/llm/claude");
-  const { geminiProvider } = await import("@/lib/llm/gemini");
   const seedMsgs = getMessages(conv);
-  await distillTurn(config.llmProvider === "gemini" ? geminiProvider : claudeProvider, {
+  await distillTurn({
     conversationId: conv, messageId: seedMsgs[1].id, at: seeded,
     userText: seedMsgs[0].text, answerText: seedMsgs[1].text + " [S1][S2]",
     citedSources: [
@@ -294,7 +292,7 @@ async function main() {
   const report = [
     `# Eval results`,
     ``,
-    `Run: ${now.toISOString()} · provider \`${config.llmProvider}\` · model \`${config.llmProvider === "claude" ? config.claudeModel : config.geminiModel}\``,
+    `Run: ${now.toISOString()} · model \`${config.claudeModel}\``,
     ``,
     `**${pass}/${rows.length} passed** · median time to first word ${(median(firsts) / 1000).toFixed(1)}s · median total ${(median(totals) / 1000).toFixed(1)}s · ` +
       `citation checks clean on ${cleanCitations}/${factual.length} answers that searched`,

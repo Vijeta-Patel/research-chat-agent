@@ -1,4 +1,6 @@
 import { config } from "@/lib/config";
+import { HttpError, postJson } from "@/lib/search/http";
+import { errorMessage } from "@/lib/util";
 
 // Stage 1 of web_search: DISCOVERY — "which URLs match this query?".
 // The only stage we buy. Every provider returns the same shape, so they're
@@ -23,21 +25,6 @@ interface DiscoveryProvider {
   name: string;
   enabled: () => boolean;
   search: (args: WebSearchArgs, signal?: AbortSignal) => Promise<Hit[]>;
-}
-
-class ProviderError extends Error {
-  constructor(message: string, readonly status: number) { super(message); }
-}
-
-async function postJson(url: string, key: string, body: unknown, timeoutMs: number, signal?: AbortSignal) {
-  const res = await fetch(url, {
-    method: "POST",
-    headers: { "Content-Type": "application/json", Authorization: `Bearer ${key}` },
-    body: JSON.stringify(body),
-    signal: signal ? AbortSignal.any([signal, AbortSignal.timeout(timeoutMs)]) : AbortSignal.timeout(timeoutMs),
-  });
-  if (!res.ok) throw new ProviderError(`${res.status}: ${(await res.text().catch(() => "")).slice(0, 160)}`, res.status);
-  return res.json();
 }
 
 const tavily: DiscoveryProvider = {
@@ -105,10 +92,6 @@ const cooldownMs = (status: number) =>
 const cache = new Map<string, { at: number; provider: string; hits: Hit[] }>();
 const CACHE_MS = 10 * 60_000;
 
-export function discoveryConfigured(): boolean {
-  return PROVIDERS.some((p) => p.enabled());
-}
-
 export async function discover(
   args: WebSearchArgs,
   signal?: AbortSignal,
@@ -128,9 +111,9 @@ export async function discover(
       return { provider: p.name, hits, failures };
     } catch (err) {
       if (signal?.aborted) throw err;
-      const status = err instanceof ProviderError ? err.status : 0;
+      const status = err instanceof HttpError ? err.status : 0;
       coolUntil.set(p.name, Date.now() + cooldownMs(status));
-      failures.push(`${p.name}: ${err instanceof Error ? err.message.slice(0, 120) : String(err)}`);
+      failures.push(`${p.name}: ${errorMessage(err, 120)}`);
     }
   }
   throw new Error(`All search providers failed — ${failures.join(" | ") || "none configured"}`);

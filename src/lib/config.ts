@@ -1,32 +1,17 @@
-// Central place for env-driven settings. Everything model- or provider-specific
-// is configurable so the graders can run it on their own key and quota.
+// Central place for settings. Models and keys come from the environment, so
+// the graders can run it on their own key.
 
 type Effort = "low" | "medium" | "high" | "xhigh" | "max";
 
 export const config = {
-  // "claude" (default): Claude via the Claude Agent SDK — uses ANTHROPIC_API_KEY,
-  // or the local Claude Code login if no key is set.
-  // "gemini": Google Gemini via @google/genai (needs GEMINI_API_KEY).
-  llmProvider: (process.env.LLM_PROVIDER || "claude") as "claude" | "gemini",
-
+  // The model: Claude via the Claude Agent SDK. Auth is ANTHROPIC_API_KEY, or
+  // the local Claude Code login when no key is set.
   claudeModel: process.env.CLAUDE_MODEL || "claude-sonnet-5-5",
   // Sonnet 5.5 defaults to "high"; "medium" is the recommended starting point
   // for multi-step tool use and keeps chat latency down.
   claudeEffort: (process.env.CLAUDE_EFFORT || "medium") as Effort,
   // Small, fast model for background memory distillation (summaries, claims, profile).
   claudeMemoryModel: process.env.CLAUDE_MEMORY_MODEL || "claude-haiku-5-5",
-
-  geminiApiKey: process.env.GEMINI_API_KEY ?? "",
-  geminiModel: process.env.GEMINI_MODEL || process.env.MAIN_MODEL || "gemini-3.6-flash",
-  geminiMemoryModel: process.env.GEMINI_MEMORY_MODEL || "gemini-3.5-flash-lite",
-  // Optional 4th recall retriever: hosted embeddings (only used when GEMINI_API_KEY is set).
-  embeddingModel: process.env.EMBEDDING_MODEL || "gemini-embedding-001",
-  // Tried in order when the main Gemini model is overloaded (503) or out of quota (429).
-  geminiFallbackModels: (process.env.GEMINI_FALLBACK_MODELS || process.env.FALLBACK_MODELS || "gemini-3.5-flash-lite,gemini-3.8-flash")
-    .split(",").map((m) => m.trim()).filter(Boolean),
-  // If a Gemini model hasn't started responding within this time and another
-  // model is available, abandon it (overloaded models took ~11s just to 503).
-  connectDeadlineMs: 15_000,
 
   // Web search: discovery providers (tried in order, at least one key needed).
   tavilyApiKey: process.env.TAVILY_API_KEY ?? "",
@@ -46,11 +31,14 @@ export const config = {
   rateLimitPerMinute: 12,
   // How many past messages of the current conversation are replayed verbatim.
   historyWindow: 20,
+  // Memory: how many recent conversations are always in view (the timeline), and
+  // the size of the whole memory block in the prompt (~3.5k tokens) however long the history is.
+  memoryTimeline: 6,
+  memoryBudgetChars: 14_000,
 };
 
 export function missingKeys(): string[] {
   const missing: string[] = [];
-  if (config.llmProvider === "gemini" && !config.geminiApiKey) missing.push("GEMINI_API_KEY");
   if (!config.tavilyApiKey && !config.firecrawlApiKey) missing.push("TAVILY_API_KEY or FIRECRAWL_API_KEY");
   return missing;
 }

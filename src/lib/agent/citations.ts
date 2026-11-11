@@ -39,10 +39,10 @@ const idsIn = (s: string) => [...new Set((s.match(CITE) ?? []).flatMap((c) => c.
 // Normalise markdown so "**$180**" and "$1,800" parse cleanly.
 const plain = (s: string) => s.replace(CITE, " ").replace(/[*_`]|<br\s*\/?>/g, " ").replace(/(\d),(\d)/g, "$1$2");
 
-interface Fig { raw: string; value: number; important: boolean }
+export interface Fig { raw: string; value: number; important: boolean }
 
 // Figures worth verifying: money and percentages always; other numbers > 10 that aren't years.
-function figures(s: string): Fig[] {
+export function figures(s: string): Fig[] {
   const found = plain(s).match(/[$€£₹]\s?\d+(?:\.\d+)?|\d+(?:\.\d+)?\s?%|\b\d+(?:\.\d+)?\b/g) ?? [];
   const out: Fig[] = [];
   for (const raw of found) {
@@ -59,15 +59,19 @@ function numbersIn(text: string): number[] {
   return (plain(text).match(/\d+(?:\.\d+)?/g) ?? []).map(Number).filter((n) => !Number.isNaN(n));
 }
 
-const near = (a: number, b: number) => Math.abs(a - b) <= Math.max(0.01, Math.abs(b) * 0.005);
+export const near = (a: number, b: number) => Math.abs(a - b) <= Math.max(0.01, Math.abs(b) * 0.005);
 
 // Is v a simple calculation from known-good numbers? Multiplication/division
 // by any number written alongside (seats, months); addition/subtraction only
-// between two supported figures (so "$39" can't be "explained" as 20 + 19).
+// between supported figures (so "$39" can't be "explained" as 20 + 19).
 function derivable(v: number, bases: number[], factors: number[]): boolean {
   for (const a of bases) {
     for (const b of factors) if (b !== 0 && (near(a * b, v) || near(a / b, v))) return true;
-    for (const b of bases) if (near(a + b, v) || near(Math.abs(a - b), v)) return true;
+    for (const b of bases) {
+      if (near(a + b, v) || near(Math.abs(a - b), v)) return true;
+      // Three-term working, e.g. "$25 + $30 − $10 = $45" (measured: flagged as unsupported).
+      for (const c of bases) if (near(a + b + c, v) || near(a + b - c, v) || near(Math.abs(a - b - c), v)) return true;
+    }
   }
   return false;
 }
@@ -125,8 +129,4 @@ export function checkAnswer(
     }
   }
   return result;
-}
-
-export function hasProblems(c: CheckResult): boolean {
-  return c.uncitedSentences.length + c.unknownCitations.length + c.unsupportedNumbers.length > 0;
 }
