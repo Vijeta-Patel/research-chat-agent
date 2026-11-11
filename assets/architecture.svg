@@ -1,0 +1,231 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1500 1100" width="1500" height="1100" font-family="-apple-system, 'Segoe UI', Helvetica, Arial, sans-serif">
+<defs>
+<marker id="ag" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0,0 L10,5 L0,10 z" fill="#4b5563"/></marker>
+<marker id="ab" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0,0 L10,5 L0,10 z" fill="#2563eb"/></marker>
+<marker id="ap" viewBox="0 0 10 10" refX="9" refY="5" markerWidth="7" markerHeight="7" orient="auto-start-reverse"><path d="M0,0 L10,5 L0,10 z" fill="#9333ea"/></marker>
+<style>
+.title{font-size:26px;font-weight:700;fill:#111827}
+.sub{font-size:14px;fill:#4b5563}
+.step{font-size:15px;font-weight:700;fill:#111827}
+.num{font-size:12px;font-weight:700;fill:#fff}
+.t{font-size:12px;fill:#1f2937}
+.m{font-size:11.5px;fill:#1f2937;font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace}
+.f{font-size:11px;fill:#6b7280;font-family:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace}
+.h{font-size:17px;font-weight:700;fill:#111827}
+.lab{font-size:13px;font-weight:700;fill:#111827}
+.tiny{font-size:11.5px;fill:#4b5563}
+.k{font-size:10.5px;font-weight:700;fill:#7e22ce;letter-spacing:.04em}
+</style></defs>
+<rect width="1500" height="1100" fill="#fff"/>
+<text x="40" y="44" class="title" text-anchor="start">research chat — architecture</text>
+<text x="40" y="68" class="sub" text-anchor="start">One user message, end to end. Claude writes the answer; everything else is our code. Numbers are the real limits in the code.</text>
+<rect x="1040" y="30" width="14" height="14" rx="3" fill="#dbeafe" stroke="#2563eb"/>
+<text x="1060" y="42" class="tiny" text-anchor="start">Claude (model call)</text>
+<rect x="1260" y="30" width="14" height="14" rx="3" fill="#dcfce7" stroke="#16a34a"/>
+<text x="1280" y="42" class="tiny" text-anchor="start">our code, no model call</text>
+<rect x="1040" y="52" width="14" height="14" rx="3" fill="#ffedd5" stroke="#ea580c"/>
+<text x="1060" y="64" class="tiny" text-anchor="start">bought API</text>
+<rect x="1260" y="52" width="14" height="14" rx="3" fill="#f3e8ff" stroke="#9333ea"/>
+<text x="1280" y="64" class="tiny" text-anchor="start">SQLite (node:sqlite, FTS5)</text>
+<rect x="40" y="100" width="222" height="158" rx="12" fill="#dcfce7" stroke="#16a34a" stroke-width="1.5"/>
+<circle cx="60" cy="120" r="11" fill="#16a34a"/>
+<text x="60" y="124.5" class="num" text-anchor="middle">1</text>
+<text x="78" y="125" class="step" text-anchor="start">Mask secrets</text>
+<text x="54" y="144" class="f" text-anchor="start">agent/guardrails.ts</text>
+<text x="54" y="166" class="t" text-anchor="start">Regex for API keys, tokens,</text>
+<text x="54" y="183" class="t" text-anchor="start">JWTs, passwords; Luhn check</text>
+<text x="54" y="200" class="t" text-anchor="start">for card numbers</text>
+<text x="54" y="217" class="t" text-anchor="start">→ masked BEFORE the message</text>
+<text x="54" y="234" class="t" text-anchor="start">is stored, searched or sent</text>
+<line x1="262" y1="179.0" x2="281" y2="179.0" stroke="#4b5563" stroke-width="2" marker-end="url(#ag)"/>
+<rect x="283" y="100" width="222" height="158" rx="12" fill="#dcfce7" stroke="#16a34a" stroke-width="1.5"/>
+<circle cx="303" cy="120" r="11" fill="#16a34a"/>
+<text x="303" y="124.5" class="num" text-anchor="middle">2</text>
+<text x="321" y="125" class="step" text-anchor="start">Recall memory</text>
+<text x="297" y="144" class="f" text-anchor="start">memory/retrieve.ts</text>
+<text x="297" y="166" class="t" text-anchor="start">Runs before the model, every</text>
+<text x="297" y="183" class="t" text-anchor="start">message · no model call</text>
+<text x="297" y="200" class="t" text-anchor="start">4 retrievers → rank fusion</text>
+<text x="297" y="217" class="t" text-anchor="start">→ &lt;memory&gt; block, fixed</text>
+<text x="297" y="234" class="t" text-anchor="start">budget 14,000 chars · ~10 ms</text>
+<line x1="505" y1="179.0" x2="524" y2="179.0" stroke="#4b5563" stroke-width="2" marker-end="url(#ag)"/>
+<rect x="526" y="100" width="222" height="158" rx="12" fill="#dbeafe" stroke="#2563eb" stroke-width="1.5"/>
+<circle cx="546" cy="120" r="11" fill="#2563eb"/>
+<text x="546" y="124.5" class="num" text-anchor="middle">3</text>
+<text x="564" y="125" class="step" text-anchor="start">Claude ⇄ web_search</text>
+<text x="540" y="144" class="f" text-anchor="start">llm/agent-sdk.ts</text>
+<text x="540" y="166" class="t" text-anchor="start">Sonnet 5.5 · effort medium</text>
+<text x="540" y="183" class="t" text-anchor="start">Agent SDK, built-in tools off;</text>
+<text x="540" y="200" class="t" text-anchor="start">1 MCP tool = our web_search</text>
+<text x="540" y="217" class="t" text-anchor="start">≤ 6 searches · ≤ 4 rounds</text>
+<text x="540" y="234" class="t" text-anchor="start">45 s budget · cites [S#] [M#]</text>
+<line x1="748" y1="179.0" x2="767" y2="179.0" stroke="#4b5563" stroke-width="2" marker-end="url(#ag)"/>
+<rect x="769" y="100" width="222" height="158" rx="12" fill="#dcfce7" stroke="#16a34a" stroke-width="1.5"/>
+<circle cx="789" cy="120" r="11" fill="#16a34a"/>
+<text x="789" y="124.5" class="num" text-anchor="middle">4</text>
+<text x="807" y="125" class="step" text-anchor="start">Check the answer</text>
+<text x="783" y="144" class="f" text-anchor="start">agent/verify.ts, citations.ts</text>
+<text x="783" y="166" class="t" text-anchor="start">[S#]/[M#] must exist · every</text>
+<text x="783" y="183" class="t" text-anchor="start">figure in cited text (±0.5%),</text>
+<text x="783" y="200" class="t" text-anchor="start">a × ÷ + − of cited figures ok</text>
+<text x="783" y="217" class="t" text-anchor="start">past question → must cite [M#]</text>
+<text x="783" y="234" class="t" text-anchor="start">fail → 1 repair, kept if better</text>
+<line x1="991" y1="179.0" x2="1010" y2="179.0" stroke="#4b5563" stroke-width="2" marker-end="url(#ag)"/>
+<rect x="1012" y="100" width="222" height="158" rx="12" fill="#dcfce7" stroke="#16a34a" stroke-width="1.5"/>
+<circle cx="1032" cy="120" r="11" fill="#16a34a"/>
+<text x="1032" y="124.5" class="num" text-anchor="middle">5</text>
+<text x="1050" y="125" class="step" text-anchor="start">Stream + save</text>
+<text x="1026" y="144" class="f" text-anchor="start">app/api/chat/route.ts</text>
+<text x="1026" y="166" class="t" text-anchor="start">SSE events: text, search_page,</text>
+<text x="1026" y="183" class="t" text-anchor="start">checks, revision, done</text>
+<text x="1026" y="200" class="t" text-anchor="start">messages ← answer + sources</text>
+<text x="1026" y="217" class="t" text-anchor="start">turns ← model, timings, trace</text>
+<text x="1026" y="234" class="t" text-anchor="start">(&quot;how I got this&quot;)</text>
+<line x1="1234" y1="179.0" x2="1253" y2="179.0" stroke="#4b5563" stroke-width="2" marker-end="url(#ag)"/>
+<rect x="1255" y="100" width="222" height="158" rx="12" fill="#dbeafe" stroke="#2563eb" stroke-width="1.5" stroke-dasharray="6 4"/>
+<circle cx="1275" cy="120" r="11" fill="#2563eb"/>
+<text x="1275" y="124.5" class="num" text-anchor="middle">6</text>
+<text x="1293" y="125" class="step" text-anchor="start">Distil memory</text>
+<text x="1269" y="144" class="f" text-anchor="start">memory/distill.ts</text>
+<text x="1269" y="166" class="t" text-anchor="start">Background, after the reply</text>
+<text x="1269" y="183" class="t" text-anchor="start">Haiku 5.5 · effort low → JSON</text>
+<text x="1269" y="200" class="t" text-anchor="start">summary · topics · aliases ·</text>
+<text x="1269" y="217" class="t" text-anchor="start">decisions · open · claims ·</text>
+<text x="1269" y="234" class="t" text-anchor="start">profile → validated by code</text>
+<text x="40" y="92" class="tiny" text-anchor="start">your message ↓</text>
+<rect x="500" y="330" width="560" height="330" rx="14" fill="#f9fafb" stroke="#9ca3af" stroke-width="1.5"/>
+<text x="520" y="358" class="h" text-anchor="start">web_search — the only tool</text>
+<text x="748" y="358" class="f" text-anchor="start">search/tool.ts → search/pipeline.ts</text>
+<text x="520" y="377" class="tiny" text-anchor="start">An API only finds URLs. We fetch, read and rank the pages ourselves.</text>
+<rect x="518" y="390" width="524" height="47" rx="8" fill="#ffedd5" stroke="#ea580c" stroke-width="1.5"/>
+<text x="530" y="409" class="lab" text-anchor="start">1 Discover</text>
+<text x="530" y="426" class="f" text-anchor="start">discover.ts</text>
+<text x="660" y="409" class="t" text-anchor="start">Tavily (basic, 6 results) → Firecrawl v2 if it fails</text>
+<text x="660" y="426" class="t" text-anchor="start">breaker: 429 → 60 s · auth/credits → 1 h · else 2 min · 10-min cache</text>
+<rect x="518" y="443" width="524" height="47" rx="8" fill="#dcfce7" stroke="#16a34a" stroke-width="1.5"/>
+<text x="530" y="462" class="lab" text-anchor="start">2 Fetch + read</text>
+<text x="530" y="479" class="f" text-anchor="start">read.ts</text>
+<text x="660" y="462" class="t" text-anchor="start">top 5 pages in parallel · 4.5 s timeout · 3 MB cap</text>
+<text x="660" y="479" class="t" text-anchor="start">Mozilla Readability on linkedom · table cells kept as rows</text>
+<rect x="518" y="496" width="524" height="47" rx="8" fill="#ffedd5" stroke="#ea580c" stroke-width="1.5"/>
+<text x="530" y="515" class="lab" text-anchor="start">3 Render</text>
+<text x="530" y="532" class="f" text-anchor="start">Firecrawl scrape</text>
+<text x="660" y="515" class="t" text-anchor="start">≤ 2 per search · official sources · page &lt; 800 chars</text>
+<text x="660" y="532" class="t" text-anchor="start">or a price question with no price · /pricing ranked first</text>
+<rect x="518" y="549" width="524" height="47" rx="8" fill="#dcfce7" stroke="#16a34a" stroke-width="1.5"/>
+<text x="530" y="568" class="lab" text-anchor="start">4 Rank</text>
+<text x="530" y="585" class="f" text-anchor="start">rank.ts</text>
+<text x="660" y="568" class="t" text-anchor="start">~700-char passages · BM25 (k1 = 1.2, b = 0.75)</text>
+<text x="660" y="585" class="t" text-anchor="start">+1.5 for figures on numeric questions · best 2,400 chars/page</text>
+<rect x="518" y="602" width="524" height="47" rx="8" fill="#dcfce7" stroke="#16a34a" stroke-width="1.5"/>
+<text x="530" y="621" class="lab" text-anchor="start">5 Guard + label</text>
+<text x="530" y="638" class="f" text-anchor="start">sources.ts</text>
+<text x="660" y="621" class="t" text-anchor="start">tier: official / primary / news / community / roundup</text>
+<text x="660" y="638" class="t" text-anchor="start">injection text removed · same page = same [S#] all chat</text>
+<line x1="607.0" y1="260" x2="607.0" y2="328" stroke="#2563eb" stroke-width="2" marker-end="url(#ab)"/>
+<line x1="667.0" y1="328" x2="667.0" y2="260" stroke="#2563eb" stroke-width="2" marker-end="url(#ab)"/>
+<text x="599.0" y="298" class="f" text-anchor="end">query, include_domains,</text>
+<text x="599.0" y="313" class="f" text-anchor="end">start_date, topic</text>
+<text x="675.0" y="298" class="f" text-anchor="start">[S#] · title · tier · date ·</text>
+<text x="675.0" y="313" class="f" text-anchor="start">untrusted_page_text</text>
+<rect x="1085" y="345" width="185" height="128" rx="14" fill="#fff" stroke="#9ca3af" stroke-dasharray="5 4"/>
+<text x="1177" y="371" class="lab" text-anchor="middle">The web</text>
+<text x="1099" y="393" class="tiny" text-anchor="start">vendor pricing pages,</text>
+<text x="1099" y="408" class="tiny" text-anchor="start">changelogs, news</text>
+<text x="1099" y="423" class="tiny" text-anchor="start">UI streams each URL:</text>
+<text x="1099" y="438" class="tiny" text-anchor="start">read · rendered · snippet</text>
+<text x="1099" y="453" class="tiny" text-anchor="start">+ the reason (HTTP 403…)</text>
+<line x1="1060" y1="409" x2="1083" y2="409" stroke="#4b5563" stroke-width="2" marker-end="url(#ag)"/>
+<rect x="40" y="720" width="1420" height="340" rx="16" fill="#faf5ff" stroke="#9333ea" stroke-width="1.5"/>
+<text x="60" y="750" class="h" text-anchor="start">Memory — one local SQLite file (node:sqlite + FTS5, porter stemming) · memory/db.ts</text>
+<text x="60" y="770" class="tiny" text-anchor="start">Every table can be read and forgotten from the UI (/api/memory). Forgetting a chat removes everything derived from it.</text>
+<line x1="394.0" y1="718" x2="394.0" y2="260" stroke="#9333ea" stroke-width="2" marker-end="url(#ap)"/>
+<rect x="40" y="300" width="225" height="362" rx="10" fill="#fff" stroke="#9333ea"/>
+<text x="52" y="322" class="lab" text-anchor="start">READ · every message</text>
+<text x="52" y="344.0" class="k" text-anchor="start">1. READ THE QUESTION</text>
+<text x="52" y="361.6" class="t" text-anchor="start">dates via chrono-node, in the</text>
+<text x="52" y="379.2" class="t" text-anchor="start">user&#x27;s time zone · content</text>
+<text x="52" y="396.8" class="t" text-anchor="start">words · $ amounts · UK/US</text>
+<text x="52" y="414.4" class="t" text-anchor="start">spellings · about our past?</text>
+<text x="52" y="432.0" class="k" text-anchor="start">2. FOUR RETRIEVERS</text>
+<text x="52" y="449.6" class="t" text-anchor="start">dates: SQL range (past only)</text>
+<text x="52" y="467.20000000000005" class="t" text-anchor="start">words: BM25 on messages</text>
+<text x="52" y="484.8" class="t" text-anchor="start">  + 2 before / 1 after</text>
+<text x="52" y="502.4" class="t" text-anchor="start">topics: BM25 on notes+aliases</text>
+<text x="52" y="520.0" class="t" text-anchor="start">facts: BM25 on claims, $</text>
+<text x="52" y="537.6" class="k" text-anchor="start">3. FUSE + SELECT</text>
+<text x="52" y="555.2" class="t" text-anchor="start">RRF k=60 · dates weight ×3</text>
+<text x="52" y="572.8" class="t" text-anchor="start">keep ≥ 60% of best · top 3</text>
+<text x="52" y="590.4000000000001" class="k" text-anchor="start">4. FILL 14,000-CHAR BUDGET</text>
+<text x="52" y="608.0" class="t" text-anchor="start">profile → date hits → facts →</text>
+<text x="52" y="625.6" class="t" text-anchor="start">notes (+6 recent) → messages</text>
+<text x="52" y="643.2" class="t" text-anchor="start">+ &quot;searched X: nothing found&quot;</text>
+<line x1="1366.0" y1="260" x2="1366.0" y2="718" stroke="#9333ea" stroke-width="2" marker-end="url(#ap)"/>
+<rect x="1085" y="492" width="270" height="214" rx="10" fill="#fff" stroke="#9333ea"/>
+<text x="1097" y="514" class="lab" text-anchor="start">WRITE · after the reply</text>
+<text x="1097" y="536.0" class="t" text-anchor="start">• claim kept only if it cites a</text>
+<text x="1097" y="553.5" class="t" text-anchor="start">   source the answer used [S#]</text>
+<text x="1097" y="571.0" class="t" text-anchor="start">• one entity name per company</text>
+<text x="1097" y="588.5" class="t" text-anchor="start">   (&quot;Supabase Pro&quot; → &quot;Supabase&quot;)</text>
+<text x="1097" y="606.0" class="t" text-anchor="start">• an older chat&#x27;s open item can</text>
+<text x="1097" y="623.5" class="t" text-anchor="start">   be closed (&quot;we went with X&quot;)</text>
+<text x="1097" y="641.0" class="t" text-anchor="start">• secrets never stored</text>
+<text x="1097" y="658.5" class="t" text-anchor="start">• missed writes rebuilt from the</text>
+<text x="1097" y="676.0" class="t" text-anchor="start">   transcript (≤ 3/turn, 2 tries)</text>
+<rect x="60.0" y="790" width="263.2" height="250" rx="12" fill="#fff" stroke="#c084fc"/>
+<text x="74.0" y="818" class="step" text-anchor="start">Transcripts</text>
+<text x="74.0" y="838" class="f" text-anchor="start">messages · messages_fts</text>
+<text x="74.0" y="866" class="k" text-anchor="start">COLUMNS</text>
+<text x="74.0" y="886" class="m" text-anchor="start">id, conversation_id, role,</text>
+<text x="74.0" y="903" class="m" text-anchor="start">text, created_at,</text>
+<text x="74.0" y="920" class="m" text-anchor="start">sources_json, memory_json</text>
+<text x="74.0" y="952" class="k" text-anchor="start">HOW IT&#x27;S USED</text>
+<text x="74.0" y="972" class="t" text-anchor="start">written as it happens, so</text>
+<text x="74.0" y="990" class="t" text-anchor="start">nothing is lost on failure</text>
+<text x="74.0" y="1008" class="t" text-anchor="start">read by: date range, BM25</text>
+<rect x="339.2" y="790" width="263.2" height="250" rx="12" fill="#fff" stroke="#c084fc"/>
+<text x="353.2" y="818" class="step" text-anchor="start">Conversation notes</text>
+<text x="353.2" y="838" class="f" text-anchor="start">conversation_memory (+ _fts)</text>
+<text x="353.2" y="866" class="k" text-anchor="start">COLUMNS</text>
+<text x="353.2" y="886" class="m" text-anchor="start">summary (≤ 70 words)</text>
+<text x="353.2" y="903" class="m" text-anchor="start">topics_json, entities_json</text>
+<text x="353.2" y="920" class="m" text-anchor="start">aliases_json (4–10)</text>
+<text x="353.2" y="952" class="k" text-anchor="start">HOW IT&#x27;S USED</text>
+<text x="353.2" y="972" class="t" text-anchor="start">aliases = other words a</text>
+<text x="353.2" y="990" class="t" text-anchor="start">person might use later</text>
+<text x="353.2" y="1008" class="t" text-anchor="start">6 most recent always shown</text>
+<rect x="618.4" y="790" width="263.2" height="250" rx="12" fill="#fff" stroke="#c084fc"/>
+<text x="632.4" y="818" class="step" text-anchor="start">Decisions + open items</text>
+<text x="632.4" y="838" class="f" text-anchor="start">conversation_memory</text>
+<text x="632.4" y="866" class="k" text-anchor="start">COLUMNS</text>
+<text x="632.4" y="886" class="m" text-anchor="start">decisions_json (≤ 5)</text>
+<text x="632.4" y="903" class="m" text-anchor="start">open_json (≤ 5)</text>
+<text x="632.4" y="920" class="m" text-anchor="start">kept current every turn</text>
+<text x="632.4" y="952" class="k" text-anchor="start">HOW IT&#x27;S USED</text>
+<text x="632.4" y="972" class="t" text-anchor="start">a later chat can close an</text>
+<text x="632.4" y="990" class="t" text-anchor="start">item → decision recorded</text>
+<text x="632.4" y="1008" class="t" text-anchor="start">in the original chat</text>
+<rect x="897.5999999999999" y="790" width="263.2" height="250" rx="12" fill="#fff" stroke="#c084fc"/>
+<text x="911.5999999999999" y="818" class="step" text-anchor="start">Facts ledger</text>
+<text x="911.5999999999999" y="838" class="f" text-anchor="start">claims · claims_fts</text>
+<text x="911.5999999999999" y="866" class="k" text-anchor="start">COLUMNS</text>
+<text x="911.5999999999999" y="886" class="m" text-anchor="start">entity, attribute, value,</text>
+<text x="911.5999999999999" y="903" class="m" text-anchor="start">source_url, observed_at,</text>
+<text x="911.5999999999999" y="920" class="m" text-anchor="start">entity_key, attribute_key</text>
+<text x="911.5999999999999" y="952" class="k" text-anchor="start">HOW IT&#x27;S USED</text>
+<text x="911.5999999999999" y="972" class="t" text-anchor="start">append-only: a new value is</text>
+<text x="911.5999999999999" y="990" class="t" text-anchor="start">a new row → value history</text>
+<text x="911.5999999999999" y="1008" class="t" text-anchor="start">$19/mo (3 Nov) → usage-based</text>
+<rect x="1176.8" y="790" width="263.2" height="250" rx="12" fill="#fff" stroke="#c084fc"/>
+<text x="1190.8" y="818" class="step" text-anchor="start">Profile</text>
+<text x="1190.8" y="838" class="f" text-anchor="start">profile · profile_history</text>
+<text x="1190.8" y="866" class="k" text-anchor="start">COLUMNS</text>
+<text x="1190.8" y="886" class="m" text-anchor="start">key, value, said_at,</text>
+<text x="1190.8" y="903" class="m" text-anchor="start">conversation_id</text>
+<text x="1190.8" y="920" class="m" text-anchor="start">current = latest version</text>
+<text x="1190.8" y="952" class="k" text-anchor="start">HOW IT&#x27;S USED</text>
+<text x="1190.8" y="972" class="t" text-anchor="start">no cap; 2,000-char share</text>
+<text x="1190.8" y="990" class="t" text-anchor="start">forget a chat → falls back</text>
+<text x="1190.8" y="1008" class="t" text-anchor="start">to the earlier value</text>
+<text x="40" y="1088" class="tiny" text-anchor="start">Model runtime: Claude Agent SDK with every built-in tool off (built without an API key) · optional: CLAUDE_RUNTIME=api → our own loop on the Messages API (llm/messages-api.ts)</text>
+</svg>

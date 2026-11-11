@@ -1,6 +1,32 @@
 # Decision log
 
-Every significant design decision, in the order it was made: the problem, the options, what was chosen, and the **evidence**. Where a decision was later reversed, both are kept, because the reversal is part of the reasoning. [`DESIGN.md`](../DESIGN.md) is the one-page summary; this is the full record.
+Every significant design decision: the problem, the options, what was chosen, and the **evidence** that made it win. Where a decision was later reversed, both are kept, because the reversal is part of the reasoning. Decisions are numbered in the order they were made (D1–D55) and grouped by topic.
+
+- How it all fits together: [DESIGN.md](DESIGN.md)
+- How to run it: [SETUP.md](SETUP.md)
+
+## At a glance: what we chose, what it beat, and why it won
+
+| Area | Chosen | Alternatives considered | Why it won | Details |
+|---|---|---|---|---|
+| Agent shape | Our own harness; one model-facing tool (`web_search`); memory, checks and guardrails in code | LangChain / LangGraph / AI SDK; a `recall_memory` tool | The harness is what's judged, so every line must be explainable; recall can't be skipped by the model; the brief allows one tool | D4–D6 |
+| Model runtime | Claude via the Claude Agent SDK, every built-in tool off; our own Messages API loop as an option | Messages API only; Gemini | **No Anthropic API key was available**, and the SDK runs on a Claude Code login. Gemini hit 503s and ran out of quota in testing | D8, D9, D43, D55 |
+| Model sizes | Sonnet 5.5 answers; Haiku 5.5 writes memory notes | One model for everything | Memory notes are background JSON, so a small model is enough and never delays the answer | D11 |
+| Finding pages | Tavily, failing over to Firecrawl, with circuit breakers | treg.to gateway; scraping search engines; Brave; SearXNG; own crawler | Free with no card; failover verified with Tavily's key deliberately broken | D14 |
+| Reading pages | Our own fetch + Readability + JavaScript rendering + BM25 passage ranking | Passing the search API's snippets through | Snippets led to made-up Pipedrive prices; reading the page got HubSpot's real pricing tiers | D13, D15–D17 |
+| Trusting sources | Reliability tiers in code; prices only from official sources | Treating every result alike | Same result every run; official figures beat blog figures | D18 |
+| When memory is read | Before the model, on every message ("memory first") | A tool the model may call; the whole history in the prompt | No extra round trip; can't be skipped; the prompt stays the same size however long the history | D6, D21, D47 |
+| What memory holds | Transcripts; conversation notes with alternative words; decisions and open items; a versioned facts ledger; a profile with history | Transcripts only | Each layer answers a different kind of question ("what did I ask", "which did we pick", "what changed") | D19, D49, D54 |
+| Recall without keywords | Recent chats always in view + alternative words written at save time + four combined searches | Embeddings; a model "router" call before every answer | Measured 11/16 → **20/20**, ~10 ms, no extra model call; embeddings picked the wrong chat | D24, D48 |
+| Facts over time | Ledger that never overwrites; one name per company | Keeping only the latest value | "What changed since…" becomes a lookup; value histories line up | D20, D52 |
+| Honesty about the past | Memory block says what was searched, including "nothing"; answers about the past must cite memory | Trusting the prompt alone | The "conversation that never happened" test passes; a grounding check catches the rest | D23, D47 |
+| Citations | Source IDs; code checks every figure against the cited text; one repair pass | Prompt-only citations; a judge model on every answer | Caught made-up prices; costs nothing when the answer is clean | D29–D31 |
+| Guardrails | In code: secret masking, query privacy, injection removal, link stripping, budgets | A moderation model; topic blocklists | Deterministic, no added latency; blocklists make a general assistant worse | §7 |
+| Showing the work | Live per-URL search log; citation opens the cited passage; "how I got this" | A generic "searching…" spinner | A reviewer can check every claim in one click | D36, D45, D46 |
+| Storage | Node's built-in SQLite with full-text search | better-sqlite3; Postgres; JSON files | No native build on `npm install`; no external service to run | D37 |
+| Testing | Our own end-to-end suite + a memory suite | Public benchmarks only | None of them tests "recall my old answer, then re-check it live" | D40–D42 |
+
+---
 
 **Contents**
 1. [Reading the brief](#1-reading-the-brief)
@@ -32,7 +58,7 @@ Every significant design decision, in the order it was made: the problem, the op
 
 ## 2. Agent architecture
 
-**D4. Our harness, a pluggable inner loop.** `src/lib/agent/run.ts` owns the whole turn: secret masking → memory recall → model loop → checks → persistence → background distillation. The model provider only runs the model ⇄ `web_search` loop, behind a small `Provider` interface (`src/lib/llm/`).
+**D4. Our harness, a pluggable inner loop.** `src/lib/agent/run.ts` owns the whole turn: secret masking → memory recall → model loop → checks → persistence → background distillation. The model only runs the model ⇄ `web_search` loop, behind a small interface (`src/lib/llm/`; today the `Runtime` interface, D55).
 - *Rejected:* LangChain / LangGraph / Vercel AI SDK. The loop and the harness are what's being judged; owning them means every line can be explained.
 
 **D5. Exactly one model-facing tool: `web_search`.** Everything else (memory, checks, guardrails) runs in code around the model.
@@ -42,6 +68,11 @@ Every significant design decision, in the order it was made: the problem, the op
 
 **D7. No separate planner model.** First planned (a cheap model to decide memory/search needs). Dropped when free-tier quotas made every call expensive. Date parsing and the "is this about our past?" check proved to be deterministic code jobs, with no LLM needed.
 
+**D44. Shared helpers instead of copies** (`lib/util.ts`). Before: URL normalising in three places, two stop-word lists and tokenisers, three hand-rolled timeout signals, the cited-ID regex in four files, source tiers computed twice per result, tool-argument validation split across two files.
+- *A real bug this removed:* search hits were de-duplicated by a normalised URL but numbered `[S#]` by the raw URL, so one page could get two IDs. Both now use one `pageKey()`.
+- *A second one:* the old key dropped the whole query string, so `item?id=1` and `item?id=2` counted as one page. `pageKey()` drops only tracking/locale parameters.
+- `run.ts` went from 379 lines to a ~150-line spine; the search tool lives in `search/tool.ts`, the post-answer checks in `agent/verify.ts`.
+
 ---
 
 ## 3. Model provider
@@ -50,7 +81,7 @@ Every significant design decision, in the order it was made: the problem, the op
 - *Measured problems:* repeated 503 "high demand" errors. An overloaded model took **10.8 s just to fail**. The SDK's built-in retry (5 attempts, exponential backoff) made one answer take **167 s**. Then the daily quota ran out.
 - *Fixes made at the time (removed with the Gemini path, D43):* SDK retries off; our own fallback chain (3.6 Flash → 3.5 Flash-Lite → 3.8 Flash); a per-model circuit breaker (429 → 60 s cool-down, 503 → 5 min); a 15 s connection deadline.
 
-**D9. Default provider: Claude Sonnet 5.5 via the Claude Agent SDK.** It runs with `ANTHROPIC_API_KEY`, or with a local Claude Code login for development.
+**D9. Claude Sonnet 5.5 via the Claude Agent SDK.** It runs with `ANTHROPIC_API_KEY`, or with a local Claude Code login for development.
 - **Configured down to the brief:** `tools: []` (every built-in tool off: no shell, no files, no built-in web); our `web_search` is the only tool (an in-process MCP tool whose handler is our guarded search); `settingSources: []`; `persistSession: false` (our SQLite store is the only memory); `cwd` set to a temp directory.
 - *Rejected:* the SDK's built-in WebSearch/WebFetch. Two tools instead of one; no date filters, source tiers or guardrails; our citation checker couldn't see the page text.
 - *Measured:* effort `low` vs `medium` made no measurable latency difference (16.0 s vs 15.2 s on the same question), so `medium` stayed.
@@ -58,6 +89,23 @@ Every significant design decision, in the order it was made: the problem, the op
 **D10. Gemini stayed available for a while** (`LLM_PROVIDER=gemini`), with the same harness and tool on both. *Superseded by D43.*
 
 **D11. A cheap model for memory distillation** (Claude Haiku 5.5). It runs once per turn, in the background, so cost and latency don't touch the answer.
+
+**D43. One model layer: Gemini removed.** Anyone running the project needs only `ANTHROPIC_API_KEY` (or a local Claude Code login).
+- *Why:* a second provider meant a `Provider` interface with two implementations, two fallback strategies, provider-specific safety handling and doubled eval runs — for a path nobody would grade. The interface is gone; `llm/claude.ts` exports `generate` and `complete`.
+- *Cost, stated plainly:* the optional vector retriever used Gemini embeddings, so it went too. Recall dropped to three retrievers (dates, keywords, distilled topics) until D48 rebuilt vague-wording recall without embeddings.
+
+**D55. The Claude Agent SDK stays primary; our own Messages API loop is an option.** The Agent SDK runs Anthropic's agent harness, the one part of the project a reviewer could call "not yours". We kept it as primary because **no Anthropic API key was available**: the SDK also runs on a Claude Code login, so it's the runtime every test and eval was run on. (It also accepts `ANTHROPIC_API_KEY`.)
+- *Option for key holders:* `CLAUDE_RUNTIME=api` switches to `messages-api.ts`, our own loop behind the same `Runtime` interface (`llm/shared.ts`).
+  - Streams replies; answers parallel tool calls in one message; replays the whole assistant turn unchanged.
+  - At most `maxToolRounds` rounds, with `tool_choice: none` on the last so it must answer.
+  - Handles `refusal`, `pause_turn` and `max_tokens`.
+  - Caches the system prompt and tool definition (changing `tool_choice` keeps that cache) and enables the server-side refusal fallback.
+- *One tool schema for both:* the zod shape the Agent SDK uses is converted to the API's JSON Schema, so they can't drift.
+- *How the API loop was tested without a key:*
+  - Against a local fake of the Messages API that replays a two-search turn. Both searches ran, both results went back in one message, the assistant turn was replayed unchanged, the last round sent `tool_choice: none`, a refusal produced the plain "declined" message, and memory distillation used Haiku at low effort.
+  - A real request with a fake key returned the auth error message.
+  - **Never run against the live API with a real key.**
+- *Rejected:* making the API loop the default when a key is present (it is the less-tested path); dropping the Agent SDK (the project would stop running without a key); the SDK's beta Tool Runner (our own loop is ~100 lines, all explainable).
 
 ---
 
@@ -105,6 +153,9 @@ Nobody builds web search fully from scratch without an index. Crawling the web i
 
 **D18. Source reliability tiers in code:** official / primary / news / community / roundup. Prices must come from official sources; when a search returns none, the tool result tells the model to search the vendor's own domain.
 
+**D45. Search you can watch.** The pipeline reports each step: the URLs discovery returned, then per page `fetching → read in full | rendering → rendered | snippet only`, with the time taken and the reason ("HTTP 403", "timed out", "almost no readable text (JavaScript page)", "not opened — only the top 5 are read"). The same log stays under the answer, rebuilt from the stored sources.
+- *Rejected:* a generic "searching…" spinner (the old UI) — it hides exactly the part a reviewer wants to judge.
+
 ---
 
 ## 5. Memory
@@ -142,6 +193,8 @@ Fuzzy recall mainly comes from **distilled general topics** ("managed databases"
 
 **D27. Old answers aren't evidence for current facts.** For questions not about the past, raw recall is limited to the user's own earlier messages (their needs), never old answers verbatim. (Since D48, dated summaries and recorded facts are always available; the prompt rule and the freshness check stop them being presented as current.) *Measured:* the model had cited its own earlier answer as the source for a current price.
 
+**D28. "Forget this conversation" removes everything derived from it:** transcript, index, summary, facts, the profile facts it contributed, and its turn ledger rows.
+
 **D47. Memory first, enforced in code.** A question about our past must not be answered before memory has been looked through.
 - *Structure:* recall runs before the model on every message; the model has no way to answer ahead of it. The UI prints "memory checked first · N earlier chats · recalled …" above the search log.
 - *Check:* when the message is about our past and the draft cites no memory record and doesn't say there is none, one repair pass re-sends the memory block and requires `[M#]` citations or a plain "no record".
@@ -171,7 +224,6 @@ Fuzzy recall mainly comes from **distilled general topics** ("managed databases"
 
 **D54. The profile keeps its history and has no cap.** *Gaps:* only the 12 most recent profile facts reached the model (the rest silently dropped); a changed value replaced the old one; forgetting a conversation deleted any profile key it had last touched, including what earlier chats said. *Fix:* every value is a version with the conversation that said it (`profile_history`); the current value is the latest version; the model sees "(earlier: …)"; forgetting a conversation removes only its versions, so the key falls back to what was said before. The profile has a 2,000-character share of the memory block, and anything beyond it is named as left out, never cut silently. *Tested:* Pune → Bengaluru keeps "Pune" as earlier; forgetting the "Bengaluru" chat brings back Pune; 18 facts all reach the model.
 
-**D28. "Forget this conversation" removes everything derived from it:** transcript, index, summary, facts, the profile facts it contributed, and its turn ledger rows.
 
 ---
 
@@ -187,6 +239,10 @@ Fuzzy recall mainly comes from **distilled general topics** ("managed databases"
 - *Rejected:* an LLM judge on every turn (latency and cost; the checker catches the common failure for free).
 
 **D32. "Is it still correct?" answers have a required shape:** per item, Then [memory] / Now [source] / Changed · Unchanged · Couldn't verify, plus a verdict. *Measured:* before this, a model wrote "still correct" when a price model had changed.
+
+**D46. Citations you can verify in one click.** For each citation the UI takes the text it vouches for, finds that figure (or, with no figure, the best-matching line) in the text the agent read, and shows the passage with the figure highlighted. The citation links to the page with a text fragment (`#:~:text=…`) so the browser scrolls to the passage.
+- Figures that are not in the cited text are named in the popup — the same rule the citation checker enforces, made visible.
+- *Limit, stated plainly:* text-fragment links depend on the browser and on the page still containing those words; when they don't match, the page simply opens at the top.
 
 ---
 
@@ -230,22 +286,6 @@ All in code (`src/lib/agent/guardrails.ts`) unless marked *prompt*.
 
 **D35. A turn ledger** (`turns` table): every answer's provider, model, timezone, total and first-word time, searches, revision flag, notices and full step trace, including the background distillation outcome. It used to be printed to the console and lost.
 
-**D43. One model layer: Gemini removed.** Anyone running the project needs only `ANTHROPIC_API_KEY` (or a local Claude Code login).
-- *Why:* a second provider meant a `Provider` interface with two implementations, two fallback strategies, provider-specific safety handling and doubled eval runs — for a path nobody would grade. The interface is gone; `llm/claude.ts` exports `generate` and `complete`.
-- *Cost, stated plainly:* the optional vector retriever used Gemini embeddings, so it went too. Recall is now three retrievers (dates, keywords, distilled topics). Vague-wording recall is the next piece of work.
-
-**D44. Shared helpers instead of copies** (`lib/util.ts`). Before: URL normalising in three places, two stop-word lists and tokenisers, three hand-rolled timeout signals, the cited-ID regex in four files, source tiers computed twice per result, tool-argument validation split across two files.
-- *A real bug this removed:* search hits were de-duplicated by a normalised URL but numbered `[S#]` by the raw URL, so one page could get two IDs. Both now use one `pageKey()`.
-- *A second one:* the old key dropped the whole query string, so `item?id=1` and `item?id=2` counted as one page. `pageKey()` drops only tracking/locale parameters.
-- `run.ts` went from 379 lines to a ~150-line spine; the search tool lives in `search/tool.ts`, the post-answer checks in `agent/verify.ts`.
-
-**D45. Search you can watch.** The pipeline reports each step: the URLs discovery returned, then per page `fetching → read in full | rendering → rendered | snippet only`, with the time taken and the reason ("HTTP 403", "timed out", "almost no readable text (JavaScript page)", "not opened — only the top 5 are read"). The same log stays under the answer, rebuilt from the stored sources.
-- *Rejected:* a generic "searching…" spinner (the old UI) — it hides exactly the part a reviewer wants to judge.
-
-**D46. Citations you can verify in one click.** For each citation the UI takes the text it vouches for, finds that figure (or, with no figure, the best-matching line) in the text the agent read, and shows the passage with the figure highlighted. The citation links to the page with a text fragment (`#:~:text=…`) so the browser scrolls to the passage.
-- Figures that are not in the cited text are named in the popup — the same rule the citation checker enforces, made visible.
-- *Limit, stated plainly:* text-fragment links depend on the browser and on the page still containing those words; when they don't match, the page simply opens at the top.
-
 **D36. "How I got this"** under each answer renders that ledger, so a reviewer sees the architecture working while they chat: memory used, pages read in full vs. rendered vs. snippet, each step with its timing, guardrail hits and repairs.
 
 ---
@@ -278,11 +318,11 @@ All in code (`src/lib/agent/guardrails.ts`) unless marked *prompt*.
 - secret masking
 - search failover
 
-**D41. Honest results.**
-- Claude: the first 10 of 14 passed before the subscription usage limit cut the run.
-- The blocked cases + vague recall then passed **5/5 on Gemini** through the same harness (before Gemini was removed, D43).
-- Earlier full runs: 12/12 and 10/10.
-- The first-ever run scored 6/10 because the script didn't load `.env.local` and every search returned 401. Even then, the agent said search was unavailable instead of guessing.
+**D41. Honest results, newest first.**
+- **Latest full run (11 Nov): 13/14.** The failure was the test, not the agent: it correctly said Supabase "doesn't appear to have shut down its free tier", and the assertion's word list didn't include "doesn't". The assertion was widened and the case passes on its own.
+- **Memory suite (`npm run eval:memory`, D48): 20/20 recall and 8/8 write checks**, three runs in a row.
+- Runs cut short by the Claude subscription's usage limit are not counted as results.
+- Earlier full runs: 14/14, 12/12 and 10/10. The very first scored 6/10 because the script didn't load `.env.local` and every search returned 401. Even then, the agent said search was unavailable instead of guessing.
 
 **D42. Public benchmarks considered:** LongMemEval (temporal reasoning, abstention), FreshQA (fast-changing facts, false premises), SimpleQA, FRAMES, BrowseComp. *Deferred:* samples would cost a lot of free-tier quota, and none tests the brief's exact pattern ("recall my past answer, then re-check it against the live web"), which is what our own cases target.
 
@@ -335,7 +375,8 @@ Each was found from evidence (traces, the checker, stored data), not guessed.
 | v4 | (unchanged) | **Four memory types**, background distillation, hybrid recall with rank fusion, turn ledger | + Haiku for distillation |
 | v4.1 | (unchanged) | Neighbour context, specific profile keys, stricter date parsing (from real use) | (unchanged) |
 | v5 | Per-URL live progress; citations open the page at the cited passage | Vector retriever removed with Gemini | **Claude only**; provider interface removed; shared helpers |
-| v6.1 | (unchanged) | Cross-chat decisions; one name per company; catch-up of missed writes; profile history | (unchanged) |
 | v6 | (unchanged) | **Memory first** (enforced); always-in-view timeline; aliases at write time; facts retriever; decisions + open items; inspectable, forgettable memory; `eval:memory` 20/20 | (unchanged) |
+| v6.1 | (unchanged) | Cross-chat decisions; one name per company; catch-up of missed writes; profile history | (unchanged) |
+| v7 | (unchanged) | (unchanged) | Agent SDK stays primary (no API key); **own Messages API loop** as an option |
 
-Next steps are in `DESIGN.md` → "With another week".
+Next steps are in [DESIGN.md](DESIGN.md) → "With another week".
