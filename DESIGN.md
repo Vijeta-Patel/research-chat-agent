@@ -10,58 +10,51 @@
 
 ### 1. Memory is read first, and doesn't need the right words
 
-- **It can't be skipped.** Recall runs before the model on every message. It isn't a tool the model might forget to call, and a check rejects any answer about the past that cites no memory record.
-- **It finds vague references.**
-  - The six most recent chats are always in view.
-  - When a chat is saved, the background notes add other words a person might use for it later ("db hosting", "moisturiser", "notebook").
-  - Four searches (dates, words, topics, facts) are fused, so "that database thing" or "is it still $25?" finds the right chat with no model call.
-  - **Measured: 11/16 → 20/20.**
-- **It remembers what matters, not just what was said:**
-  - **Decisions and open items:** "which one did we pick?" → "you haven't yet: HubSpot vs Pipedrive, after Friday's demo".
-  - **A facts ledger that never overwrites:** "has the price changed?" becomes a lookup, e.g. Neon *$19/mo (3 Nov) → usage-based (10 Nov)*.
-  - **A profile with history**, which carries across chats.
-- **It's honest when there's nothing.** The memory block always says what was searched, including "nothing on 5 Nov", so the agent says so instead of inventing a conversation.
-- **It's yours.** Everything lives in one local SQLite file. A drawer shows everything stored, and any item can be forgotten.
+- **It can't be skipped.** Recall runs before the model on every message, not as a tool the model might forget. Any answer about the past that cites no memory record is sent back.
+- **It finds vague references with no model call.** The 6 most recent chats are always in view, each saved chat gets alternative words ("db hosting", "moisturiser"), and four searches (dates, words, topics, facts) are fused. "That database thing" and "is it still $25?" find the right chat. **Measured: 11/16 → 20/20.**
+- **It remembers what matters:**
+  - **decisions and open items:** "which did we pick?" → "not yet: HubSpot vs Pipedrive, after Friday's demo"
+  - **a facts ledger that never overwrites:** Neon *$19/mo (3 Nov) → usage-based (10 Nov)*
+  - **a profile with history**
+- **It's honest and it's yours.** The memory block says what was searched, including "nothing on 5 Nov", so the agent never invents a conversation. Everything sits in one local SQLite file, and any item can be viewed and forgotten.
 
 ### 2. Search reads the pages, not the snippets
 
-- **Why:** passing a search API's snippets through led the model to quote Pipedrive prices that weren't in the text it cited.
-- **What we do now:** an API only finds the URLs (Tavily, failing over to Firecrawl). Our code fetches each page, extracts the text, renders JavaScript pricing pages, and ranks passages.
-- **Sources are tiered** (official, news, community, roundup), and prices must come from official sources.
+- **The problem:** a search API returns ~500-character snippets. Pipedrive's missed its pricing table, and the model quoted prices that weren't in its source.
+- **Why not their full-page option:** their extractor would decide what we read, we couldn't rank it against the question, and it costs more credits.
+- **So we buy only step 1:**
+
+| Step | Who | What happens | Why |
+|---|---|---|---|
+| Find URLs | Tavily → Firecrawl | 6 results; circuit breaker skips a failing provider; 10-min cache | Nobody can crawl the web; two providers, no single point of failure |
+| Download | ours | Top 5 pages in parallel, 4.5 s timeout | We need the exact text we cite, to check figures and show the passage |
+| Extract | ours | Readability; table cells kept as rows | Pages are mostly menus, and pricing grids aren't article-shaped |
+| Render JS | Firecrawl, ≤ 2 | Only pages with < 800 chars, or no price on a price question; `/pricing` first | HubSpot's prices load only via JavaScript; each render costs a credit |
+| Pick passages | ours | BM25 against the question, figures boosted, ~2,400 chars/page | A page is too long for the model; the price table must beat the intro |
+| Label | ours | `[S#]`, reliability tier, date; injected instructions removed | The model knows what to trust and cites IDs, not URLs |
+
+- **The snippet is only the fallback.** If a page can't be read, the snippet is used and labelled "snippet only", with the reason.
 
 ### 3. Every claim is checked in code, and you can check it too
 
-- **Citations are IDs (`[S3]`, `[M1]`), never URLs** the model could make up.
-- **Every figure must appear in the text of the source it cites.** Calculations from cited figures are allowed. If a check fails, one repair pass runs.
-- **One click to verify:**
-  - a citation shows the exact passage the agent read, with the figure highlighted
-  - the search log shows every URL it opened, and why some were only snippets
+- **Citations are IDs (`[S3]`, `[M1]`), never URLs.**
+- **Every figure must appear in the text it cites.** Arithmetic on cited figures is allowed. A failed check gets one repair pass.
+- **One click to verify:** a citation shows the exact passage read, with the figure highlighted.
 
 ### 4. The model: Claude, locked down to the brief
 
-- **Claude Sonnet 5.5 through the Claude Agent SDK, because we had no Anthropic API key.** The SDK also runs on a Claude Code login.
-  - Every built-in tool is off; `web_search` is its only tool.
-  - Our database is its only memory.
-- **For key holders:** `CLAUDE_RUNTIME=api` switches to our own ~100-line loop on the Messages API, with prompt caching and a refusal fallback. It was tested against a local fake of the API, not yet the live one.
+- **Claude Sonnet 5.5 through the Claude Agent SDK, because we had no API key** (the SDK runs on a Claude Code login). Every built-in tool is off; `web_search` is its only tool, and our database is its only memory.
+- **With a key,** `CLAUDE_RUNTIME=api` swaps in our own ~100-line loop on the Messages API. It was tested against a local fake of the API, not yet the live one.
 
-## Measured
+## Measured and rejected
 
-| | Result |
-|---|---|
-| Memory: 20 questions that mostly avoid the chats' own words, plus 8 checks on how memory is written | **20/20 and 8/8**, three runs in a row |
-| End to end: 14 real conversations, real model, real web | **13/14**; the one failure was the test's wording |
-| Speed fixes, from per-step timings | 167 s → 17 s · 46.5 s → 5.5 s · memory recall ~10 ms |
-
-## Considered and rejected
-
-| Rejected | Why |
-|---|---|
-| A `recall_memory` tool | Breaks the one-tool brief, and the model could skip it |
-| Embeddings / a vector database | Measured: local models picked the wrong conversation |
-| A model call to route each question | Extra latency on every message; the 20/20 above needed none |
-| Search snippets as the answer source | Caused wrong prices (measured) |
-| A judge model on every answer | Slower and costlier; code checks catch wrong figures at no cost |
-| Gemini as the model | Overloaded and out of quota in testing |
+- **Memory:** 20/20 recall and 8/8 write checks, three runs in a row. **End to end:** 13/14 with the real model and web; the miss was the test's wording. **Speed:** 167 s → 17 s and 46.5 s → 5.5 s, fixed from per-step timings.
+- **Rejected:**
+  - a `recall_memory` tool: the model could skip it
+  - embeddings: they picked the wrong chat
+  - a routing model call per question: the 20/20 needed none
+  - a judge model per answer: code checks are free
+  - Gemini: overloaded and out of quota
 
 ## With another week
 

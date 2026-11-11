@@ -143,7 +143,7 @@ Nobody builds web search fully from scratch without an index. Crawling the web i
 | Wikidata → official site → sitemap/RSS | Deferred | Great for "what shipped since Monday" (dated changelogs); the most work. |
 
 **D15. Reader:** our own `fetch` (4.5 s timeout, 3 MB cap, an honest User-Agent naming the project) → **Mozilla Readability on linkedom** → block-aware text, with pricing-table cells kept as rows. If Readability gives up (pricing grids aren't "article-like"), we fall back to the body text minus nav/footer.
-- *Rejected:* jsdom (heavier); Tavily `include_raw_content` (their extraction again, a black box).
+- *Rejected:* jsdom (heavier); the providers' own full-page options, i.e. Tavily `include_raw_content` and Firecrawl's scrape-each-result search. With those, their extractor decides what the model reads; we couldn't render `/pricing` first or rank passages against the question; the citation check and the "show me the passage" link need the exact text we read; and they cost extra credits per page. Their snippet is kept only as the fallback when a page can't be read.
 
 **D16. Rendering JS pages:** a page is a candidate if it was blocked, has very little text, or the question is about prices and the text has none. Renders go through Firecrawl (max 2 per search, official sources only), **prioritised by need**.
 - *Measured bug:* renders first went out in result order, so a support article took the slot and `/pricing` stayed a snippet. Now candidates are ranked by URL match to the question.
