@@ -90,13 +90,27 @@ export function getDb(): DatabaseSync {
       claim_id UNINDEXED, text, tokenize = 'porter unicode61'
     );
 
-    -- User profile: stable facts the user stated about themselves (latest wins).
+    -- User profile: stable facts the user stated about themselves. "profile"
+    -- holds the current value per key; "profile_history" every value it has had,
+    -- and which conversation said it — so a change keeps its past, and forgetting
+    -- one conversation removes only what that conversation said.
     CREATE TABLE IF NOT EXISTS profile (
       key TEXT PRIMARY KEY,
       value TEXT NOT NULL,
       updated_at TEXT NOT NULL,
       conversation_id TEXT NOT NULL
     );
+    CREATE TABLE IF NOT EXISTS profile_history (
+      key TEXT NOT NULL,
+      value TEXT NOT NULL,
+      said_at TEXT NOT NULL,
+      conversation_id TEXT NOT NULL
+    );
+    CREATE INDEX IF NOT EXISTS idx_profile_history ON profile_history(key, said_at);
+    -- Databases from before the history table: their current values become the first version.
+    INSERT INTO profile_history (key, value, said_at, conversation_id)
+      SELECT key, value, updated_at, conversation_id FROM profile
+      WHERE key NOT IN (SELECT DISTINCT key FROM profile_history);
   `);
   // Databases created before a column existed get it added (additive only).
   const columns = new Set(db.prepare("PRAGMA table_info(conversation_memory)").all().map((r) => r.name as string));
@@ -201,7 +215,11 @@ export function deleteConversation(id: string): void {
   d.prepare("DELETE FROM claims WHERE conversation_id = ?").run(id);
   d.prepare("DELETE FROM conversation_memory_fts WHERE conversation_id = ?").run(id);
   d.prepare("DELETE FROM conversation_memory WHERE conversation_id = ?").run(id);
-  d.prepare("DELETE FROM profile WHERE conversation_id = ?").run(id);
+  // Profile: drop only what this conversation said; each touched key falls back
+  // to its latest remaining value (or goes, if this conversation was its only source).
+  const keys = d.prepare("SELECT DISTINCT key FROM profile_history WHERE conversation_id = ?").all(id).map((r) => r.key as string);
+  d.prepare("DELETE FROM profile_history WHERE conversation_id = ?").run(id);
+  for (const k of keys) refreshProfileKey(k);
   d.prepare("DELETE FROM turns WHERE conversation_id = ?").run(id);
   d.prepare("DELETE FROM messages WHERE conversation_id = ?").run(id);
   d.prepare("DELETE FROM conversations WHERE id = ?").run(id);
@@ -375,6 +393,30 @@ export function addClaim(c: Omit<Claim, "id">): boolean {
   return true;
 }
 
+/** Entity names already in the ledger, most recently used first ("HubSpot", "Supabase"). */
+export function knownEntities(limit = 80): string[] {
+  return getDb()
+    .prepare("SELECT entity FROM claims GROUP BY entity_key ORDER BY MAX(observed_at) DESC LIMIT ?")
+    .all(limit)
+    .map((r) => r.entity as string);
+}
+
+/**
+ * Conversations whose distilled memory is behind their transcript: never
+ * distilled, or messages added since. Only ones quiet since `quietSinceIso`, so
+ * a turn whose distillation is still running isn't picked up twice.
+ */
+export function undistilledConversations(excludeConversation: string | undefined, quietSinceIso: string, limit = 5): { id: string; covered: number }[] {
+  return getDb()
+    .prepare(`SELECT c.id, COALESCE(cm.message_count, 0) AS covered
+              FROM conversations c LEFT JOIN conversation_memory cm ON cm.conversation_id = c.id
+              WHERE c.id != ? AND c.updated_at < ?
+                AND COALESCE(cm.message_count, 0) < (SELECT COUNT(*) FROM messages m WHERE m.conversation_id = c.id)
+              ORDER BY c.updated_at DESC LIMIT ?`)
+    .all(excludeConversation ?? "", quietSinceIso, limit)
+    .map((r) => ({ id: r.id as string, covered: Number(r.covered) }));
+}
+
 /** "Entity · attribute" names already in the ledger for entities mentioned in `text`. */
 export function knownClaimKeys(text: string, limit = 30): string[] {
   const t = claimKey(text);
@@ -428,23 +470,56 @@ export function deleteFact(entity: string, attribute: string): void {
   }
 }
 
+/** Forget a profile fact entirely: its current value and every earlier one. */
 export function deleteProfileFact(key: string): void {
-  getDb().prepare("DELETE FROM profile WHERE key = ?").run(claimKey(key));
+  const d = getDb();
+  d.prepare("DELETE FROM profile_history WHERE key = ?").run(claimKey(key));
+  d.prepare("DELETE FROM profile WHERE key = ?").run(claimKey(key));
 }
 
-export interface ProfileFact { key: string; value: string; updatedAt: string; conversationId: string }
+export interface ProfileFact {
+  key: string;
+  value: string;
+  updatedAt: string;
+  conversationId: string;
+  earlier: { value: string; saidAt: string }[]; // previous values, oldest first
+}
 
+/** Every profile fact, most recently updated first, each with its earlier values. */
 export function getProfile(): ProfileFact[] {
-  return getDb()
-    .prepare("SELECT * FROM profile ORDER BY updated_at DESC LIMIT 12")
-    .all()
-    .map((r) => ({ key: r.key as string, value: r.value as string, updatedAt: r.updated_at as string, conversationId: r.conversation_id as string }));
+  const d = getDb();
+  const history = new Map<string, { value: string; saidAt: string }[]>();
+  for (const r of d.prepare("SELECT key, value, said_at FROM profile_history ORDER BY said_at ASC").all()) {
+    const k = r.key as string;
+    history.set(k, [...(history.get(k) ?? []), { value: r.value as string, saidAt: r.said_at as string }]);
+  }
+  return d.prepare("SELECT * FROM profile ORDER BY updated_at DESC").all().map((r) => ({
+    key: r.key as string,
+    value: r.value as string,
+    updatedAt: r.updated_at as string,
+    conversationId: r.conversation_id as string,
+    earlier: (history.get(r.key as string) ?? []).slice(0, -1).filter((h) => h.value !== r.value),
+  }));
 }
 
+/** Record what the user said about themselves. Repeating the current value adds no version. */
 export function upsertProfileFact(key: string, value: string, conversationId: string): void {
-  getDb()
-    .prepare("INSERT OR REPLACE INTO profile (key, value, updated_at, conversation_id) VALUES (?, ?, ?, ?)")
-    .run(claimKey(key), value, now().toISOString(), conversationId);
+  const d = getDb();
+  const k = claimKey(key);
+  const current = d.prepare("SELECT value FROM profile WHERE key = ?").get(k) as Row | undefined;
+  if (current?.value !== value) {
+    d.prepare("INSERT INTO profile_history (key, value, said_at, conversation_id) VALUES (?, ?, ?, ?)").run(k, value, now().toISOString(), conversationId);
+  }
+  refreshProfileKey(k);
+}
+
+/** The current value of a key = its latest version; no versions left → the key is gone. */
+function refreshProfileKey(key: string): void {
+  const d = getDb();
+  const latest = d.prepare("SELECT * FROM profile_history WHERE key = ? ORDER BY said_at DESC LIMIT 1").get(key) as Row | undefined;
+  if (!latest) d.prepare("DELETE FROM profile WHERE key = ?").run(key);
+  else d.prepare("INSERT OR REPLACE INTO profile (key, value, updated_at, conversation_id) VALUES (?, ?, ?, ?)")
+    .run(key, latest.value as string, latest.said_at as string, latest.conversation_id as string);
 }
 
 export function countMessages(conversationId: string): number {

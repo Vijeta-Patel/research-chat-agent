@@ -29,9 +29,9 @@ message ─► mask secrets
 | Conversation summary + topics + **aliases** | `conversation_memory` | distil step | "that database thing we talked about" |
 | **Decisions and open items** | `conversation_memory` | distil step, kept current as the chat goes on | "which one did we pick?" · "what's still undecided?" |
 | Facts ledger (versioned, never overwritten) | `claims` | distil step, **only facts the answer cited** | "has Neon's pricing changed?" → `$19/month (3 Nov) → usage-based (10 Nov)` |
-| User profile | `profile` | distil step, only what the user said about themselves | a *new* chat knows "20-person sales team" |
+| User profile, **with history** | `profile` + `profile_history` | distil step, only what the user said about themselves | a *new* chat knows "20-person sales team", and that it used to be 15 |
 
-- **Write path:** after each answer, in the background (it never delays the reply). One Haiku call returns JSON; the code validates it: claims must reference a source the answer actually cited, and secrets are never stored. Existing fact names are passed in, so a restated fact lines up as a new version of the same fact.
+- **Write path:** after each answer, in the background (it never delays the reply). One Haiku call returns JSON; the code validates it: claims must reference a source the answer actually cited, and secrets are never stored. Existing company and fact names are passed in and enforced, so a restated fact lines up as a new version of the same fact. The same call can close an open item of an *earlier* chat when the user states the outcome ("we went with HubSpot"). If a write fails, the next turn rebuilds it from the saved transcript.
 - **Memory first, as a rule in code.** Recall runs before the model on every message, so the model cannot answer ahead of it. If a question about our past comes back without citing a memory record (or saying there is none), the checker sends it back once with the records attached.
 - **Recall without the right words.** Two mechanisms, neither needing a model call or embeddings at read time: (1) the profile and a timeline of the six most recent chats are always in view, so the model itself matches "the tools for my reps" to the CRM chat; (2) for older history, the distiller writes **aliases** at write time ("moisturiser", "notebook", "db hosting") into the full-text index — semantics are paid for once, in the background.
 - **Measured:** `npm run eval:memory` seeds 17 chats, distils them with the real write path, and asks 20 questions that mostly avoid the chats' own words, with the targets pushed out of the timeline. **20/20** select the right conversation, in ~9 ms each ([eval/memory.md](eval/memory.md)). Before this change the same idea scored 11/16, and 6 of those 11 found only the user's old message without the recorded facts.
@@ -75,7 +75,7 @@ message ─► mask secrets
 | Gemini (the first build ran on its free tier) | Hit 503s and quota limits in testing; a second provider doubled every code path for no gain, so it was removed — one model layer, Claude |
 
 ## Measured
-`npm run eval`: **14 end-to-end cases** on a seeded database (real model, real search). Latest run, 11 Nov: **14/14**, median first word 6.6 s, median total 17.1 s ([eval/results.md](eval/results.md)). Memory on its own: `npm run eval:memory`, **20/20** ([eval/memory.md](eval/memory.md)).
+`npm run eval`: **14 end-to-end cases** on a seeded database (real model, real search). Latest full run, 11 Nov: **13/14**, median first word 3.5 s, median total 13.2 s ([eval/results.md](eval/results.md)). The failure was the test, not the agent: it correctly said Supabase "doesn't appear to have shut down its free tier", which the assertion's word list missed. The assertion was widened and the case passes on its own. Memory on its own: `npm run eval:memory`, **20/20 recall + 8/8 write-path checks**, three runs in a row ([eval/memory.md](eval/memory.md)).
 
 ## With another week
 - **Speed:** stream an opening line while pages are read.

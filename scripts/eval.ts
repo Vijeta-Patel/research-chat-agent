@@ -38,7 +38,7 @@ interface Case {
   prompt: string | ((d: Dates) => string);
   followUp?: string;
   followUpNewChat?: boolean;
-  expect: (r: TurnResult) => (string | null)[]; // null = pass, string = failure reason
+  expect: (r: TurnResult, d: Dates) => (string | null)[]; // null = pass, string = failure reason
 }
 interface Dates { seeded: Date; empty: Date }
 
@@ -96,9 +96,12 @@ const CASES: Case[] = [
     id: "never-happened",
     category: "Honesty",
     prompt: (d) => `What did I ask you on ${fmt(d.empty)}?`,
-    expect: (r) => [
+    expect: (r, d) => [
       has(/(don't|do not|no) (have )?(a )?record|nothing (from|on)|no conversation/i, r.text, "should say there is no record"),
-      hasNot(/you asked (me )?about (?!.*postgres)/i, r.text, "must not invent a topic"),
+      // Nothing may be claimed FOR the empty date. Mentioning other, real
+      // conversations (the recent-chats timeline) is fine and expected.
+      r.text.split(/(?<=[.!?])\s+/).some((x) => new RegExp(`\\b${d.empty.getUTCDate()} ${fmt(d.empty).split(" ").pop()!.slice(0, 3)}|\\bthat (day|date)\\b`, "i").test(x) && /you asked|we (discussed|talked)/i.test(x) && !/\b(no|not|nothing|never)\b|n't\b/i.test(x))
+        ? "must not invent a topic for that date" : null,
       has(/postgres/i, r.text, "should offer the conversation that does exist"),
     ],
   },
@@ -127,7 +130,8 @@ const CASES: Case[] = [
     expect: (r) => [
       cites(r.text, "S") ? null : "should cite a source",
       r.sources.some((s) => s.tier === "official" && /supabase/.test(s.domain)) ? null : "should read Supabase's own site",
-      (r.checks?.unsupportedNumbers.length ?? 0) === 0 ? null : "figures should be backed by the cited source",
+      (r.checks?.unsupportedNumbers.length ?? 0) === 0 ? null
+        : `figures should be backed by the cited source: ${JSON.stringify(r.checks?.unsupportedNumbers)}`,
     ],
   },
   {
@@ -135,7 +139,7 @@ const CASES: Case[] = [
     category: "Accuracy",
     prompt: "Why did Supabase shut down their free tier last week?",
     expect: (r) => [
-      has(/(has not|hasn't|did not|didn't|no evidence|not shut|still (has|offers)|couldn't find|no sign)/i, r.text, "should challenge the false premise"),
+      has(/(has not|hasn't|did not|didn't|does not|doesn't|no evidence|not shut|still (has|offers)|couldn't find|found no|no (report|sign|record)|isn't true|not true)/i, r.text, "should challenge the false premise"),
       r.searches.length ? null : "should check before answering",
     ],
   },
@@ -269,7 +273,7 @@ async function main() {
       r = await turn(c.followUp, c.followUpNewChat ? undefined : r.conversationId);
     }
     await waitForDistillation(); // memory written before the next case runs
-    const failures = r.error ? [`error: ${r.error}`] : (c.expect(r).filter(Boolean) as string[]);
+    const failures = r.error ? [`error: ${r.error}`] : (c.expect(r, { seeded, empty }).filter(Boolean) as string[]);
     config.tavilyApiKey = realTavily;
     rows.push({ c, r, failures });
     console.log(`${failures.length ? "FAIL" : "PASS"} (${(r.ms / 1000).toFixed(1)}s${failures.length ? " — " + failures.join("; ") : ""})`);

@@ -10,7 +10,7 @@ import { Cat } from "@/components/Cats";
 
 export interface ConvSummary { id: string; title: string; updatedAt: string }
 interface Remembered {
-  profile: { key: string; value: string; updatedAt: string }[];
+  profile: { key: string; value: string; updatedAt: string; earlier: { value: string; saidAt: string }[] }[];
   facts: { entity: string; attribute: string; history: { value: string; observedAt: string; sourceUrl: string | null }[] }[];
   threads: { conversationId: string; title: string; createdAt: string; decisions: string[]; open: string[] }[];
 }
@@ -68,7 +68,13 @@ export function MemoryPanel(props: {
               <Section title="about you" count={mem.profile.length}>
                 {mem.profile.map((p) => (
                   <li key={p.key} className="group flex items-start gap-1">
-                    <span className="min-w-0 flex-1"><span className="text-muted">{p.key}:</span> {p.value}</span>
+                    <span className="min-w-0 flex-1">
+                      <span className="text-muted">{p.key}:</span>{" "}
+                      {p.earlier.map((h, i) => (
+                        <span key={i}><span className="text-faint line-through">{h.value}</span> <span className="font-mono text-[10px] text-faint">{fmtDate(h.saidAt)}</span> → </span>
+                      ))}
+                      {p.value} <span className="font-mono text-[10px] text-faint">{fmtDate(p.updatedAt)}</span>
+                    </span>
                     <Forget label={`Forget "${p.key}"`} onClick={() => forget({ kind: "profile", key: p.key })} />
                   </li>
                 ))}

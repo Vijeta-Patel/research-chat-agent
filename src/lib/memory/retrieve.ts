@@ -117,10 +117,21 @@ export async function retrieveMemory(
       h.role === "user" ? 500 : 900, budget);
 
   // 1. Profile: always — cross-session context that doesn't depend on keywords.
+  //    Every fact, most recent first, with the value it replaced; if the profile
+  //    ever outgrows its share, the oldest facts are named as left out, never cut silently.
   const profile = getProfile();
   if (profile.length) {
-    push({ kind: "profile", conversationId: "", conversationTitle: "profile", createdAt: profile[0].updatedAt,
-      text: profile.map((p) => `${p.key}: ${p.value}`).join("; ") }, 800);
+    const PROFILE_BUDGET = 2_000;
+    const lines: string[] = [];
+    let size = 0;
+    for (const p of profile) {
+      const prev = p.earlier.at(-1);
+      const line = `- ${p.key}: ${p.value}${prev ? ` (earlier: ${prev.value}, until ${fmtDay(p.updatedAt, tz)})` : ""}`;
+      if (size + line.length > PROFILE_BUDGET) { lines.push(`- (${profile.length - lines.length} older profile fact(s) not shown)`); break; }
+      lines.push(line);
+      size += line.length + 1;
+    }
+    push({ kind: "profile", conversationId: "", conversationTitle: "profile", createdAt: profile[0].updatedAt, text: lines.join("\n") }, PROFILE_BUDGET + 100);
   }
   // 2. Long chat: what scrolled out of the verbatim window of THIS conversation.
   if (current && opts.currentMessageCount > opts.historyWindow) {

@@ -42,8 +42,13 @@ const plain = (s: string) => s.replace(CITE, " ").replace(/[*_`]|<br\s*\/?>/g, "
 export interface Fig { raw: string; value: number; important: boolean }
 
 // Figures worth verifying: money and percentages always; other numbers > 10 that aren't years.
+// "11 Nov", "Nov 11", "11 November": a date's day, not a figure to verify.
+// (Measured: "as of 11 Nov 2026 [S3]" was flagged as an unsupported "11".)
+const MONTH = "jan(?:uary)?|feb(?:ruary)?|mar(?:ch)?|apr(?:il)?|may|june?|july?|aug(?:ust)?|sep(?:t(?:ember)?)?|oct(?:ober)?|nov(?:ember)?|dec(?:ember)?";
+const DAY_OF_MONTH = new RegExp(`\\b\\d{1,2}(?:st|nd|rd|th)?\\s+(?:${MONTH})\\b|\\b(?:${MONTH})\\.?\\s+\\d{1,2}(?:st|nd|rd|th)?\\b`, "gi");
+
 export function figures(s: string): Fig[] {
-  const found = plain(s).match(/[$€£₹]\s?\d+(?:\.\d+)?|\d+(?:\.\d+)?\s?%|\b\d+(?:\.\d+)?\b/g) ?? [];
+  const found = plain(s).replace(DAY_OF_MONTH, " ").match(/[$€£₹]\s?\d+(?:\.\d+)?|\d+(?:\.\d+)?\s?%|\b\d+(?:\.\d+)?\b/g) ?? [];
   const out: Fig[] = [];
   for (const raw of found) {
     const value = parseFloat(raw.replace(/[^\d.]/g, ""));

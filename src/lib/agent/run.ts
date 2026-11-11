@@ -3,8 +3,8 @@ import { buildTurnPreamble } from "@/lib/agent/prompt";
 import { maskSecrets } from "@/lib/agent/guardrails";
 import { verifyAnswer } from "@/lib/agent/verify";
 import { describeError, generate } from "@/lib/llm/claude";
-import { addMessage, conversationExists, createConversation, getMessages, now, saveTurn } from "@/lib/memory/db";
-import { distillTurn, track } from "@/lib/memory/distill";
+import { addMessage, conversationExists, createConversation, getConversationMemory, getMessages, now, saveTurn } from "@/lib/memory/db";
+import { catchUp, distillTurn, track } from "@/lib/memory/distill";
 import { retrieveMemory, type UserClock } from "@/lib/memory/retrieve";
 import { createSearchTool } from "@/lib/search/tool";
 import type { AgentEvent, TraceStep, TurnMeta } from "@/lib/types";
@@ -145,9 +145,17 @@ export async function runTurn({ conversationId, message: rawMessage, clock, emit
       answerText: finalText,
       citedSources: [...search.sources.values()].filter((s) => cited.has(s.id)),
       recallOnly: report.aboutOurPast && search.searchesUsed() === 0,
+      // Recalled chats with unfinished business: this turn may settle some of it.
+      related: [...new Set(report.records.filter((r) => r.kind === "summary").map((r) => r.conversationId))]
+        .map((id) => getConversationMemory(id))
+        .filter((m) => !!m && m.open.length > 0)
+        .map((m) => ({ conversationId: m!.conversationId, title: m!.title, createdAt: m!.createdAt, open: m!.open })),
     })
-      .then((d) => trace({ step: "memory", detail: `distilled: summary ${d.summary ? "updated" : "unchanged"} · ${d.claims} new claim(s) · ${d.profile} profile fact(s)`, ms: d.ms }))
+      .then((d) => trace({ step: "memory", detail: `distilled: summary ${d.summary ? "updated" : "unchanged"} · ${d.claims} new claim(s) · ${d.profile} profile fact(s)${d.resolved ? ` · closed ${d.resolved} open item(s) in earlier chats` : ""}`, ms: d.ms }))
       .catch((err) => trace({ step: "memory", detail: `distillation failed: ${errorMessage(err, 100)}`, ms: 0 }))
-      .finally(() => saveTurn(ledger)),
+      .finally(() => saveTurn(ledger))
+      // Then repair any earlier turn whose memory was never written.
+      .then(() => catchUp(convId))
+      .then((n) => { if (n) console.log(`[memory] caught up ${n} missed exchange(s)`); }),
   );
 }

@@ -163,6 +163,14 @@ Fuzzy recall mainly comes from **distilled general topics** ("managed databases"
 
 **D50. Memory you can read and delete.** The drawer lists the profile, open items, decisions and every tracked fact with its value history; each can be forgotten (`/api/memory`). Everything is one local SQLite file.
 
+**D51. A later chat can settle an earlier chat's open item.** *Gap:* only the current conversation's notes were ever updated, so after "we went with HubSpot" in a new chat, the CRM chat still read "choose between HubSpot and Pipedrive". *Fix:* the open items of the chats recall brought in are given to the same background distillation call (no extra model call); it returns which ones the user settled, and code closes them in their own conversation and records the decision there ("… said 11 Nov, in a later chat"). Only the user stating an outcome counts: asking "which one did we pick?" closes nothing. *Tested:* both cases, in `eval:memory`.
+
+**D52. One name per company in the facts ledger.** *Measured in the drawer:* the same vendor stored as "Supabase" and "Supabase Pro", and Salesforce prices as "Pro Suite" with no company, so value histories split and never lined up. *Fix:* the distiller gets the entity names already on record and a rule (entity = the brand; plans go in the attribute), and code folds "Supabase Pro" + "price" into "Supabase" · "Pro price" when "Supabase" is known. *Tested:* every stored entity is a brand name.
+
+**D53. Missed memory writes are caught up.** *Gap:* if a background distillation failed or the app stopped mid-write, that turn never got a summary, aliases or decisions. *Fix:* after each turn, conversations whose notes are behind their transcript (and quiet for a minute, so an in-flight write isn't doubled) are distilled from the saved transcript, at most 3 exchanges per turn and 2 tries per conversation per process. *Tested:* a never-distilled chat is caught up and then recalled from a question with none of its words.
+
+**D54. The profile keeps its history and has no cap.** *Gaps:* only the 12 most recent profile facts reached the model (the rest silently dropped); a changed value replaced the old one; forgetting a conversation deleted any profile key it had last touched, including what earlier chats said. *Fix:* every value is a version with the conversation that said it (`profile_history`); the current value is the latest version; the model sees "(earlier: …)"; forgetting a conversation removes only its versions, so the key falls back to what was said before. The profile has a 2,000-character share of the memory block, and anything beyond it is named as left out, never cut silently. *Tested:* Pune → Bengaluru keeps "Pune" as earlier; forgetting the "Bengaluru" chat brings back Pune; 18 facts all reach the model.
+
 **D28. "Forget this conversation" removes everything derived from it:** transcript, index, summary, facts, the profile facts it contributed, and its turn ledger rows.
 
 ---
@@ -308,6 +316,12 @@ Each was found from evidence (traces, the checker, stored data), not guessed.
 | "moisturiser" missed a chat stored as "moisturizer" (19/20) | `eval:memory`: stored aliases vs the question | British ↔ American spelling variants in the search query (20/20) |
 | A recall question duplicated another chat's open items | memory drawer after a live test | recall-only turns add no decisions, open items or facts |
 | "$25 + $30 − $10 = $45" flagged as an unsupported figure | failing eval case, reproduced offline | checker accepts three-term working |
+| Settling an open item in a new chat left it open in the original chat | code reading + test | open items of recalled chats passed to distillation (D51) |
+| Same vendor stored as "Supabase" and "Supabase Pro"; Salesforce as "Pro Suite" | memory drawer | known entities + canonical names (D52) |
+| A failed distillation was never retried | code reading | catch-up from the transcript (D53) |
+| Only 12 profile facts reached the model; forgetting a chat erased earlier profile values | code reading | profile versions; no cap; per-conversation forgetting (D54) |
+| "as of 11 Nov 2026 [S3]" flagged an unsupported "11" | eval failure, printed figure | day-of-month in a date isn't a figure |
+| Three eval assertions failed correct answers (other real chats mentioned; "doesn't" not in the word list) | reading the answers | assertions check the intent; each re-run |
 
 ---
 
@@ -321,6 +335,7 @@ Each was found from evidence (traces, the checker, stored data), not guessed.
 | v4 | (unchanged) | **Four memory types**, background distillation, hybrid recall with rank fusion, turn ledger | + Haiku for distillation |
 | v4.1 | (unchanged) | Neighbour context, specific profile keys, stricter date parsing (from real use) | (unchanged) |
 | v5 | Per-URL live progress; citations open the page at the cited passage | Vector retriever removed with Gemini | **Claude only**; provider interface removed; shared helpers |
+| v6.1 | (unchanged) | Cross-chat decisions; one name per company; catch-up of missed writes; profile history | (unchanged) |
 | v6 | (unchanged) | **Memory first** (enforced); always-in-view timeline; aliases at write time; facts retriever; decisions + open items; inspectable, forgettable memory; `eval:memory` 20/20 | (unchanged) |
 
 Next steps are in `DESIGN.md` → "With another week".

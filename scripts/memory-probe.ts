@@ -9,6 +9,10 @@
  *
  * The five target conversations are older than the "always in view" timeline
  * (12 newer chats sit on top), so a pass means the retrievers found it.
+ * Then three write-path checks: a later chat settling an open item closes it
+ * in the chat it belongs to (and merely asking doesn't); facts are stored under
+ * the company's name, not a plan's; a conversation whose distillation never
+ * ran is caught up from its transcript and becomes recallable.
  * Writes eval/memory.md.
  */
 import { existsSync, mkdirSync, rmSync, writeFileSync } from "node:fs";
@@ -77,7 +81,7 @@ const QUESTIONS: [string, string, string][] = [
 
 async function main() {
   const db = await import("@/lib/memory/db");
-  const { distillTurn } = await import("@/lib/memory/distill");
+  const { distillTurn, catchUp } = await import("@/lib/memory/distill");
   const { retrieveMemory } = await import("@/lib/memory/retrieve");
   const src = (n: number) => ({ id: `S${n}`, url: `https://example.com/${n}`, title: `Vendor pricing page ${n}`, domain: "example.com", tier: "official" as const, publishedDate: null, retrievedAt: "", excerpt: "", query: "" });
 
@@ -120,6 +124,74 @@ async function main() {
     rows.push(`| ${question.replace(/\|/g, "/")} | ${why} | ${ok ? "✅" : "❌"} | ${about === "-" ? "–" : rank >= 0 ? `#${rank + 1}` : "missed"} | ${promptBlock.length} | ${ms.toFixed(1)} ms |`);
   }
 
+  // ── Write-path checks ────────────────────────────────────────────────────
+  const checks: [string, boolean, string][] = [];
+  const idOf = (key: string) => db.recentConversations(undefined, 60).find((c) => c.title === title.get(key))!.conversationId;
+  const crmId = idOf("crm");
+  // The undecided choice itself, not other items that happen to name both vendors
+  // ("re-check both prices before committing" can legitimately stay open).
+  const hasChoice = (xs: string[]) => xs.some((x) => /hubspot/i.test(x) && /pipedrive/i.test(x) && /\b(choose|chose|decide|between|pick)\b/i.test(x));
+
+  // A new chat, run the way runTurn runs it: recall first, then distil with the recalled chats' open items.
+  async function newChatTurn(user: string, answer: string) {
+    const id = db.createConversation(user.slice(0, 60));
+    db.addMessage({ conversationId: id, role: "user", text: user });
+    const { report } = await retrieveMemory(user, clock, { currentConversationId: id, currentMessageCount: 0, historyWindow: 20 });
+    const messageId = db.addMessage({ conversationId: id, role: "assistant", text: answer });
+    const related = [...new Set(report.records.filter((r) => r.kind === "summary").map((r) => r.conversationId))]
+      .map((cid) => db.getConversationMemory(cid)).filter((m) => !!m && m.open.length > 0)
+      .map((m) => ({ conversationId: m!.conversationId, title: m!.title, createdAt: m!.createdAt, open: m!.open }));
+    return distillTurn({ conversationId: id, messageId, at: db.now(), userText: user, answerText: answer, citedSources: [], recallOnly: report.aboutOurPast, related });
+  }
+  const openBefore = db.getConversationMemory(crmId)!.open;
+  checks.push(["CRM chat has the HubSpot-vs-Pipedrive choice open after seeding", hasChoice(openBefore), openBefore.join("; ") || "(none)"]);
+  await newChatTurn("which CRM did we pick in the end?", "You haven't picked one yet: you were deciding between HubSpot and Pipedrive after Friday's demo [M2].");
+  const afterAsk = db.getConversationMemory(crmId)!;
+  checks.push(["Asking about it does NOT close it", hasChoice(afterAsk.open), afterAsk.open.join("; ") || "(none)"]);
+  await newChatTurn("Quick update: the demo went well and we went with HubSpot.", "Good choice. HubSpot Sales Hub Professional it is; ask about bulk pricing for 20 seats before you sign.");
+  const afterSettle = db.getConversationMemory(crmId)!;
+  checks.push(["Saying the outcome in a NEW chat closes it in the CRM chat", !hasChoice(afterSettle.open) && afterSettle.decisions.some((d) => /hubspot/i.test(d)),
+    `open: ${afterSettle.open.join("; ") || "(none)"} · decided: ${afterSettle.decisions.join("; ") || "(none)"}`]);
+
+  const brand = /^(hubspot|pipedrive|salesforce|zoho|close|neon|supabase|aws|amazon|macbook|apple|thinkpad|lenovo|bioderma)/;
+  const entities = [...new Set(db.listFacts().map((c) => c.entity))];
+  const off = entities.filter((e) => !brand.test(db.claimKey(e)));
+  checks.push(["Facts are stored under the company's name, not a plan's", off.length === 0, `entities: ${entities.join(", ")}${off.length ? ` · not a brand: ${off.join(", ")}` : ""}`]);
+
+  const missedTitle = "Noise-cancelling headphones for flights";
+  const missed = db.createConversation(missedTitle, new Date("2026-11-02T09:00:00Z"));
+  db.addMessage({ conversationId: missed, role: "user", text: "Best noise-cancelling headphones for long flights?", at: new Date("2026-11-02T09:00:00Z") });
+  db.addMessage({ conversationId: missed, role: "assistant", text: "Sony WH-1000XM6 or Bose QuietComfort Ultra.", at: new Date("2026-11-02T09:00:40Z") });
+  const before = db.getConversationMemory(missed);
+  const caught = await catchUp();
+  const after = db.getConversationMemory(missed);
+  const { report: hp } = await retrieveMemory("what did you suggest for blocking out engine noise on planes?", clock, { currentMessageCount: 0, historyWindow: 20 });
+  checks.push(["A chat whose distillation never ran is caught up and recallable", !before && !!after?.summary && hp.recalled.includes(missedTitle),
+    `caught up ${caught} exchange(s); aliases: ${after?.aliases.join(", ") || "(none)"}; recalled: ${hp.recalled.join(", ") || "nothing"}`]);
+  // Profile: a changed value keeps its past; forgetting the chat that changed it
+  // brings back the earlier value instead of losing the fact.
+  const teamA = db.createConversation("Team intro", new Date("2026-11-01T09:00:00Z"));
+  const teamB = db.createConversation("Hiring update", new Date("2026-11-08T09:00:00Z"));
+  process.env.AGENT_NOW = "2026-11-01T09:00:00Z";
+  db.upsertProfileFact("office location", "Pune", teamA);
+  process.env.AGENT_NOW = "2026-11-08T09:00:00Z";
+  db.upsertProfileFact("office location", "Bengaluru", teamB);
+  process.env.AGENT_NOW = "2026-11-11T09:00:00Z";
+  const team = () => db.getProfile().find((p) => p.key === "office location");
+  const t1 = team();
+  checks.push(["A changed profile fact keeps its earlier value", t1?.value === "Bengaluru" && t1.earlier.some((e) => e.value === "Pune"),
+    `${t1?.earlier.map((e) => e.value).join(" → ") ?? ""} → ${t1?.value}`]);
+  db.deleteConversation(teamB);
+  const t2 = team();
+  checks.push(["Forgetting the chat that changed it restores the earlier value", t2?.value === "Pune",
+    `after forgetting "Hiring update": ${t2?.value ?? "(gone)"}`]);
+  for (let i = 0; i < 15; i++) db.upsertProfileFact(`preference ${i}`, `value ${i}`, teamA);
+  const { promptBlock: pb } = await retrieveMemory("hello", clock, { currentMessageCount: 0, historyWindow: 20 });
+  checks.push(["More than 12 profile facts all reach the model", pb.includes("preference 0: value 0") && pb.includes("office location: Pune"),
+    `${db.getProfile().length} facts stored`]);
+
+  for (const [name, ok, detail] of checks) console.log(`${ok ? "✓" : "✗"} ${name}\n    ${detail}`);
+
   const mem = db.recentConversations(undefined, 40).filter((c) => TARGETS.some((t) => t.title === c.title));
   const report = [
     `# Memory recall test`,
@@ -134,13 +206,19 @@ async function main() {
     `|---|---|---|---|---|---|`,
     ...rows,
     ``,
+    `## Write-path checks: **${checks.filter((c) => c[1]).length}/${checks.length} passed**`,
+    ``,
+    `| Check | Result | Detail |`,
+    `|---|---|---|`,
+    ...checks.map(([name, ok, detail]) => `| ${name} | ${ok ? "✅" : "❌"} | ${detail.replace(/\|/g, "/")} |`),
+    ``,
     `## What the write path stored for the target conversations`,
     ...mem.map((c) => `\n**${c.title}**\n- Summary: ${c.summary}\n- Topics: ${c.topics.join(", ")}\n- Aliases: ${c.aliases.join(", ")}\n- Decided: ${c.decisions.join("; ") || "–"}\n- Left open: ${c.open.join("; ") || "–"}`),
     ``,
   ].join("\n");
   mkdirSync("eval", { recursive: true });
   writeFileSync("eval/memory.md", report);
-  console.log(`\n${pass}/${QUESTIONS.length} passed — report written to eval/memory.md`);
+  console.log(`\n${pass}/${QUESTIONS.length} recall questions passed · ${checks.filter((c) => c[1]).length}/${checks.length} write-path checks passed — report written to eval/memory.md`);
   for (const ext of ["", "-wal", "-shm"]) rmSync(DB + ext, { force: true });
   process.exit(0);
 }
